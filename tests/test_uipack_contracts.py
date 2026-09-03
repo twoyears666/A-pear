@@ -10,6 +10,9 @@ UI_PACK_HEADER = (NATIVES / "PLUIPackManager.h").read_text()
 THEME_MANAGER = (NATIVES / "PLThemeManager.m").read_text()
 LUA_RUNTIME = (NATIVES / "PLLuaRuntime.m").read_text()
 LUA_RUNTIME_H = (NATIVES / "PLLuaRuntime.h").read_text()
+NODE_VIEW = (NATIVES / "PLUINodeView.m").read_text()
+LAYOUT_ENGINE = (NATIVES / "PLUILayoutEngine.m").read_text()
+LAYOUT_ENGINE_H = (NATIVES / "PLUILayoutEngine.h").read_text()
 LINIT = (NATIVES / "external/lua/linit.c").read_text()
 LUA_DIR = NATIVES / "external/lua"
 
@@ -89,6 +92,44 @@ class UIPackContracts(unittest.TestCase):
             self.assertIn(kind, LUA_RUNTIME)
         for name in ("ui.dimen", "launcher.view", "launcher.action", "launcher.log"):
             self.assertIn(name, LUA_RUNTIME)
+
+    def test_layout_engine_is_built(self):
+        self.assertIn("PLUINodeView.m", CMAKE)
+        self.assertIn("PLUILayoutEngine.m", CMAKE)
+
+    def test_tree_validation_limits(self):
+        # 节点数 ≤ 500、深度 ≤ 12、恰好一个 content 挂载点
+        self.assertIn("PLUILayoutMaxNodes = 500", LAYOUT_ENGINE)
+        self.assertIn("PLUILayoutMaxDepth = 12", LAYOUT_ENGINE)
+        self.assertIn("contentCount != 1", LAYOUT_ENGINE)
+
+    def test_bad_tree_falls_back_to_default(self):
+        # 回退链最后一环：程序化默认三栏树
+        self.assertIn("defaultTree", LAYOUT_ENGINE_H)
+        self.assertIn('@"content"', LAYOUT_ENGINE)
+        self.assertIn('@"kind"', LAYOUT_ENGINE)
+
+    def test_weighted_stack_layout(self):
+        # 权重分配在容器 layoutSubviews 中完成，不依赖 UIStackView
+        self.assertIn("layoutSubviews", NODE_VIEW)
+        self.assertIn("weightSum", NODE_VIEW)
+        self.assertIn("weightedAvail", NODE_VIEW)
+
+    def test_corner_mask_outer_propagation(self):
+        # cornerMask=outer：父容器递归传递外沿边，只圆贴外的角
+        self.assertIn("outerEdges", NODE_VIEW)
+        self.assertIn("maskedCorners", NODE_VIEW)
+        self.assertIn("kCALayerMinXMinYCorner", NODE_VIEW)
+
+    def test_value_refs_resolved(self):
+        for ref in ("$color:", "$image:", "$i18n:", "sf:"):
+            self.assertIn(ref, NODE_VIEW)
+
+    def test_responsive_and_visibility(self):
+        # responsive.phone 覆盖 + visibleWhen 条件显隐
+        self.assertIn('@"responsive"', NODE_VIEW)
+        self.assertIn('@"visibleWhen"', NODE_VIEW)
+        self.assertIn('@"phone"', NODE_VIEW)
 
 
 if __name__ == "__main__":

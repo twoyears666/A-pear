@@ -27,6 +27,9 @@ FOUNDATION_EXPORT NSString * const PLDefaultThemeIdentifier;
 /// 读取语义颜色。主题未定义或颜色格式错误时返回 fallback。
 - (UIColor *)colorForToken:(NSString *)token fallback:(UIColor *)fallback;
 
+/// "#RRGGBB[AA]" / "#RGB" 解析；格式错误返回 nil。布局引擎的原始色值也走这里。
+- (nullable UIColor *)colorFromHex:(NSString *)hex;
+
 /// 读取主题图片。未定义、路径不安全或文件损坏时返回 nil。
 - (nullable UIImage *)imageForToken:(NSString *)token;
 
