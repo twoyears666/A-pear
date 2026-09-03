@@ -1,8 +1,9 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "pcl-classic",
   "name": "PCL Classic",
   "author": "Pear",
+  "entry": "main.lua",
   "colors": "colors.json",
   "images": {}
 }

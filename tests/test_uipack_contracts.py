@@ -15,6 +15,14 @@ LAYOUT_ENGINE = (NATIVES / "PLUILayoutEngine.m").read_text()
 LAYOUT_ENGINE_H = (NATIVES / "PLUILayoutEngine.h").read_text()
 LINIT = (NATIVES / "external/lua/linit.c").read_text()
 LUA_DIR = NATIVES / "external/lua"
+SHELL_VC = (NATIVES / "PLUIShellViewController.m").read_text()
+ACTION_ROUTER = (NATIVES / "PLUIActionRouter.m").read_text()
+SCENE_DELEGATE = (NATIVES / "SceneDelegate.m").read_text()
+PREFERENCES = (NATIVES / "PLPreferences.m").read_text()
+PREF_VC = (NATIVES / "LauncherPreferencesViewController.m").read_text()
+PACK_ROOT = NATIVES / "resources/themes/pcl-classic"
+MAIN_LUA = (PACK_ROOT / "main.lua").read_text()
+PACK_MANIFEST = (PACK_ROOT / "manifest.json").read_text()
 
 
 class UIPackContracts(unittest.TestCase):
@@ -130,6 +138,93 @@ class UIPackContracts(unittest.TestCase):
         self.assertIn('@"responsive"', NODE_VIEW)
         self.assertIn('@"visibleWhen"', NODE_VIEW)
         self.assertIn('@"phone"', NODE_VIEW)
+
+
+class ShellContracts(unittest.TestCase):
+    """M3e/M3f 双轨壳契约：新壳、动作白名单、SceneDelegate 杀开关、内置包。"""
+
+    def test_shell_and_router_are_built(self):
+        for source in ("PLUIShellViewController.m", "PLUIActionRouter.m"):
+            self.assertIn(source, CMAKE)
+            self.assertTrue((NATIVES / source).exists())
+
+    def test_shell_takes_over_show_notifications(self):
+        # 新壳完整接管 13 个 Show* 通知
+        for name in ("ShowHomePage", "ShowDownloadPage", "ShowVersionManager",
+                     "ShowProfileEditor", "ShowSettings", "ShowAIPage",
+                     "ShowMultiplayer", "ShowZeroTier", "ShowModsManager",
+                     "ShowShadersManager", "ShowModpackImport",
+                     "ShowGameDirectory", "ShowAccountManager"):
+            self.assertIn(f'@"{name}"', SHELL_VC)
+
+    def test_shell_preserves_historical_fixes(self):
+        # 从旧壳搬迁的三处历史修复必须保留
+        self.assertIn("viewController == self.contentViewController", SHELL_VC)  # 同实例跳过
+        self.assertIn("deactivateConstraints", SHELL_VC)  # 约束先 deactivate
+        self.assertIn("UIViewAnimationOptionTransitionCrossDissolve", SHELL_VC)  # 单 transition
+
+    def test_shell_reload_chain_falls_back(self):
+        # 回退链：选中包 → 程序化默认树；引擎建根失败抛异常给 SceneDelegate 兜底
+        self.assertIn("buildTreeWithError", SHELL_VC)
+        self.assertIn("PLUIShellBuildFailed", SHELL_VC)
+        self.assertIn("engineWithTree", SHELL_VC)
+
+    def test_shell_wires_runtime_events(self):
+        for wire in ("viewCommandHandler", "actionHandler", "dispatchEvent:@\"onReady\""):
+            self.assertIn(wire, SHELL_VC)
+
+    def test_action_router_is_whitelist_only(self):
+        # 绝不动态方法调用：白名单映射 + 未知动作 log 后 no-op
+        self.assertIn("PLUIActionNotificationMap", ACTION_ROUTER)
+        self.assertNotIn("NSSelectorFromString", ACTION_ROUTER)
+        self.assertIn("unknown action ignored", ACTION_ROUTER)
+
+    def test_action_router_covers_open_actions(self):
+        for action in ("open:home", "open:download", "open:versionManager",
+                       "open:settings", "open:ai", "open:mods", "open:shaders",
+                       "open:modpackImport", "open:gameDirectory",
+                       "open:accountManager", "open:profileEditor"):
+            self.assertIn(f'@"{action}"', ACTION_ROUTER)
+
+    def test_scene_delegate_has_kill_switch(self):
+        # 双轨开关：engine 壳构建异常时写回 legacy 换回旧壳
+        self.assertIn("PLUIShellViewController", SCENE_DELEGATE)
+        self.assertIn("@try", SCENE_DELEGATE)
+        self.assertIn('setPrefObject(@"general.ui_shell", @"legacy")', SCENE_DELEGATE)
+        self.assertIn("UIShellChanged", SCENE_DELEGATE)
+
+    def test_ui_shell_defaults_to_legacy(self):
+        self.assertIn('@"ui_shell": @"legacy"', PREFERENCES)
+
+    def test_settings_offer_shell_and_pack_pickers(self):
+        self.assertIn('@"key": @"ui_shell"', PREF_VC)
+        self.assertIn('@"key": @"theme_pack"', PREF_VC)
+        self.assertIn("applyThemeIdentifier", PREF_VC)
+
+    def test_builtin_pack_is_ui_pack(self):
+        # pcl-classic 升级为 schemaVersion 2 的 UI 包
+        self.assertIn('"schemaVersion": 2', PACK_MANIFEST)
+        self.assertIn('"entry": "main.lua"', PACK_MANIFEST)
+        self.assertTrue((PACK_ROOT / "main.lua").exists())
+        self.assertTrue((PACK_ROOT / "colors.json").exists())
+
+    def test_builtin_pack_lua_contract(self):
+        # 入口脚本：describe + build(ui)，恰好一个 content 挂载点，含事件函数
+        self.assertIn("function describe()", MAIN_LUA)
+        self.assertIn("function build(ui)", MAIN_LUA)
+        self.assertEqual(MAIN_LUA.count("ui.content {"), 1)
+        for handler in ("function onReady()", "function onAccountChange("):
+            self.assertIn(handler, MAIN_LUA)
+        # 脚本限额 256KB
+        self.assertLessEqual(len(MAIN_LUA.encode("utf-8")), 256 * 1024)
+
+    def test_builtin_pack_uses_only_whitelisted_actions(self):
+        # main.lua 中引用的 action 必须全部在路由器白名单内
+        import re
+        actions = set(re.findall(r'action = "([^"]+)"', MAIN_LUA))
+        self.assertTrue(actions, "main.lua should reference at least one action")
+        for action in actions:
+            self.assertIn(f'@"{action}"', ACTION_ROUTER, f"action {action} not whitelisted")
 
 
 if __name__ == "__main__":

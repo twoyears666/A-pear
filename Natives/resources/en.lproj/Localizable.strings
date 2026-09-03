@@ -205,6 +205,11 @@
 "preference.detail.mod_mirror" = "Choose the mirror source for mod/shader/resourcepack/datapack/modpack/world API and file downloads.";
 "preference.title.mod_mirror-official" = "Official Source";
 "preference.title.mod_mirror-mcim" = "MCIM Mirror";
+"preference.title.ui_shell" = "UI Shell";
+"preference.detail.ui_shell" = "Legacy uses the built-in native shell. Engine renders the launcher with the selected theme pack (Lua UI packs can restyle layout, sidebar, colors and buttons).";
+"preference.title.ui_shell-legacy" = "Native (Legacy)";
+"preference.title.ui_shell-engine" = "Theme Pack Engine (Experimental)";
+"preference.title.theme_pack" = "Theme / UI Pack";
 "preference.title.debug_logging" = "Debug logging";
 "preference.detail.debug_logging" = "Logs internal settings and actions to latestlog.txt. This helps the developers find issues easier, but Minecraft may run slower as the logs will be written to more often.";
 "preference.title.jitstreamer_server" = "The server address of JitStreamer";

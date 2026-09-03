@@ -205,6 +205,11 @@
 "preference.detail.mod_mirror" = "Choose the mirror source for mod/shader/resourcepack/datapack/modpack/world API and file downloads. MCIM mirror (mod.mcimirror.top) provides acceleration in China, compatible with both Modrinth and CurseForge APIs.";
 "preference.title.mod_mirror-official" = "Official Source";
 "preference.title.mod_mirror-mcim" = "MCIM Mirror";
+"preference.title.ui_shell" = "界面引擎";
+"preference.detail.ui_shell" = "经典为内置原生壳。材质包引擎用所选主题包渲染启动器（Lua 材质包可自定义布局、边栏、颜色与按钮）。";
+"preference.title.ui_shell-legacy" = "经典（原生）";
+"preference.title.ui_shell-engine" = "材质包引擎（实验性）";
+"preference.title.theme_pack" = "主题 / 材质包";
 "preference.title.debug_logging" = "Debug logging";
 "preference.detail.debug_logging" = "Logs internal settings and actions to latestlog.txt. This helps the developers find issues easier, but Minecraft may run slower as the logs will be written to more often.";
 "preference.title.appicon" = "Set app icon";
