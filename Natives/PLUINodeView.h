@@ -47,6 +47,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)updateText:(nullable NSString *)text;
 - (nullable NSString *)currentText;
 - (void)updateImageSpec:(nullable NSString *)imageSpec;
+/// 文本色（"$color:token" / "#RRGGBB"）与可用性。
+- (void)updateTextColorSpec:(nullable NSString *)colorSpec;
+- (void)updateEnabled:(BOOL)enabled;
 
 @end
 

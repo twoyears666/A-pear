@@ -441,6 +441,17 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     else if (self.button && image) [self.button setImage:image forState:UIControlStateNormal];
 }
 
+- (void)updateTextColorSpec:(NSString *)colorSpec {
+    UIColor *color = PLUIResolveColor(colorSpec, nil);
+    if (!color) return;
+    if (self.textLabel) self.textLabel.textColor = color;
+    else if (self.button) [self.button setTitleColor:color forState:UIControlStateNormal];
+}
+
+- (void)updateEnabled:(BOOL)enabled {
+    if (self.button) self.button.enabled = enabled;
+}
+
 #pragma mark - 元数据
 
 - (NSUInteger)nodeCount {

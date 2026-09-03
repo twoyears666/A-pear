@@ -401,6 +401,8 @@ add_executable(AngelAuraAmethyst
   PLLuaRuntime.m
   PLUINodeView.m
   PLUILayoutEngine.m
+  PLUIActionRouter.m
+  PLUIShellViewController.m
   LauncherPreferencesViewController.m
   LauncherPrefContCfgViewController.m
   LauncherPrefGameDirViewController.m
