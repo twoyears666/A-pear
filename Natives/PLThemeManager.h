@@ -30,6 +30,10 @@ FOUNDATION_EXPORT NSString * const PLDefaultThemeIdentifier;
 /// 读取主题图片。未定义、路径不安全或文件损坏时返回 nil。
 - (nullable UIImage *)imageForToken:(NSString *)token;
 
+/// 解析主题/UI 包根目录（外部目录优先于同名内置包）。identifier 不安全或包不存在返回 nil。
+/// 供 PLUIPackManager 等复用同一套包定位规则。
+- (nullable NSString *)rootForIdentifier:(NSString *)identifier;
+
 @end
 
 NS_ASSUME_NONNULL_END
