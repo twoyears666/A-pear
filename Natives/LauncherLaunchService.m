@@ -20,6 +20,8 @@ static void *LaunchServiceProgressContext = &LaunchServiceProgressContext;
 @property (nonatomic, assign) BOOL pendingLaunchAfterLogin;
 // 续启时用的宿主（弱引用，壳可能已重建）。
 @property (nonatomic, weak, nullable) UIViewController *pendingPresenter;
+// 本次启动的宿主（弱引用）：KVO 完成回调里拉起游戏用（旧壳用 self.view.window）。
+@property (nonatomic, weak, nullable) UIViewController *launchPresenter;
 @end
 
 @implementation LauncherLaunchService
@@ -124,6 +126,7 @@ static void *LaunchServiceProgressContext = &LaunchServiceProgressContext;
 
 - (void)startDownloadWithVersion:(NSDictionary *)versionObject presenter:(UIViewController *)presenter {
     self.task = [MinecraftResourceDownloadTask new];
+    self.launchPresenter = presenter;
     __weak LauncherLaunchService *weakSelf = self;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -214,8 +217,8 @@ static void *LaunchServiceProgressContext = &LaunchServiceProgressContext;
                 }
             }
             [self invokeAfterJITEnabled:^{
-                UIKit_launchMinecraftSurfaceVC(presenter.view.window, self.task.metadata);
-            } presenter:presenter];
+                UIKit_launchMinecraftSurfaceVC(self.launchPresenter.view.window, self.task.metadata);
+            } presenter:self.launchPresenter];
         } else {
             self.task = nil;
             UIApplication.sharedApplication.idleTimerDisabled = NO;
