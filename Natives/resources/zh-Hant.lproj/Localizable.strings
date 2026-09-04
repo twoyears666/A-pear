@@ -215,8 +215,6 @@
 "uipack.welcome.get" = "取得 UI 包";
 "uipack.welcome.legacy" = "切換舊引擎";
 "uipack.welcome.feedback" = "問題回報";
-"uipack.welcome.soon_title" = "即將推出";
-"uipack.welcome.soon_msg" = "UI 包取得頁面即將上線，敬請期待。現階段可先從「檔案」匯入 UI 包。";
 "preference.title.debug_logging" = "除錯日誌";
 "preference.detail.debug_logging" = "把內部設定和動作記錄到lateslog.txt。這能幫助開發者更容易地找到問題，但由於日誌寫入的次數會增多，我的世界的運行速度可能會減慢。";
 "preference.title.jitstreamer_server" = "JitStreamer伺服器地址";

@@ -11,8 +11,8 @@
 
 @implementation UpdateChecker
 
-+ (NSString *)repoOwner { return @"herbrine8403"; }
-+ (NSString *)repoName { return @"Amethyst-iOS-MyRemastered"; }
++ (NSString *)repoOwner { return @"twoyears666"; }
++ (NSString *)repoName { return @"A-pear"; }
 
 + (NSString *)latestReleaseURL {
     /* /releases/latest 接口自动返回最新的非 pre-release（正式版） */
@@ -45,7 +45,7 @@
                                                         timeoutInterval:15.0];
     [request setHTTPMethod:@"GET"];
     /* GitHub API 要求 User-Agent 头，否则可能被拒绝 */
-    [request setValue:@"Amethyst-iOS-UpdateChecker" forHTTPHeaderField:@"User-Agent"];
+    [request setValue:@"Pear-UpdateChecker" forHTTPHeaderField:@"User-Agent"];
     [request setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
 
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request

@@ -215,8 +215,6 @@
 "uipack.welcome.get" = "获取 UI 包";
 "uipack.welcome.legacy" = "切换旧引擎";
 "uipack.welcome.feedback" = "问题反馈";
-"uipack.welcome.soon_title" = "即将推出";
-"uipack.welcome.soon_msg" = "UI 包获取页面即将上线，敬请期待。现阶段可先从「文件」导入 UI 包。";
 "preference.title.debug_logging" = "Debug logging";
 "preference.detail.debug_logging" = "Logs internal settings and actions to latestlog.txt. This helps the developers find issues easier, but Minecraft may run slower as the logs will be written to more often.";
 "preference.title.appicon" = "Set app icon";

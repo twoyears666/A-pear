@@ -6,11 +6,11 @@
 <p align="center"><sub>Amethyst iOS 重制版</sub></p>
 
 <div align="center">
-  <img alt="构建状态" src="https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/actions/workflows/development.yml/badge.svg?branch=main">
-  <img alt="下载量" src="https://img.shields.io/github/downloads/herbrine8403/Amethyst-iOS-MyRemastered/total?label=Downloads&style=flat">
-  <img alt="版本" src="https://img.shields.io/github/v/release/herbrine8403/Amethyst-iOS-MyRemastered?style=flat">
-  <img alt="许可证" src="https://img.shields.io/github/license/herbrine8403/Amethyst-iOS-MyRemastered?style=flat">
-  <img alt="最后提交" src="https://img.shields.io/github/last-commit/herbrine8403/Amethyst-iOS-MyRemastered?color=c78aff&label=last%20commit&style=flat">
+  <img alt="构建状态" src="https://github.com/twoyears666/A-pear/actions/workflows/development.yml/badge.svg?branch=main">
+  <img alt="下载量" src="https://img.shields.io/github/downloads/twoyears666/A-pear/total?label=Downloads&style=flat">
+  <img alt="版本" src="https://img.shields.io/github/v/release/twoyears666/A-pear?style=flat">
+  <img alt="许可证" src="https://img.shields.io/github/license/twoyears666/A-pear?style=flat">
+  <img alt="最后提交" src="https://img.shields.io/github/last-commit/twoyears666/A-pear?color=c78aff&label=last%20commit&style=flat">
 </div>
 
 <p align="center">
@@ -31,9 +31,9 @@
   - [侧载准备](#侧载准备)
   - [安装步骤](#安装步骤)
   - [启用 JIT](#启用-jit)
+- [特别鸣谢](#特别鸣谢)
 - [贡献者](#贡献者)
 - [第三方组件](#第三方组件)
-- [捐赠](#捐赠)
 
 ## 核心特性
 
@@ -85,14 +85,14 @@
 <details>
 <summary><b>正式版（TrollStore 渠道）</b></summary>
 
-1. 前往 [Releases](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/releases) 下载 `.tipa` 安装包。
+1. 前往 [Releases](https://github.com/twoyears666/A-pear/releases) 下载 `.tipa` 安装包。
 2. 通过系统分享菜单，选择用 TrollStore 打开，即可自动完成安装。
 </details>
 
 <details>
 <summary><b>正式版（AltStore / SideStore 渠道）</b></summary>
 
-1. 前往 [Releases](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/releases) 下载 `.ipa` 安装包。
+1. 前往 [Releases](https://github.com/twoyears666/A-pear/releases) 下载 `.ipa` 安装包。
 2. 按照侧载工具的标准流程导入 IPA 完成安装。
 </details>
 
@@ -102,7 +102,7 @@
 > [!CAUTION]
 > 测试版可能包含崩溃、无法启动等严重缺陷，仅限开发测试使用。
 
-1. 前往 [GitHub Actions](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/actions) 页面下载最新 IPA 构建产物。
+1. 前往 [GitHub Actions](https://github.com/twoyears666/A-pear/actions) 页面下载最新 IPA 构建产物。
 2. 在侧载工具（AltStore、SideStore 等）中导入 IPA 完成安装。
 </details>
 
@@ -155,16 +155,12 @@ JIT（即时编译）是流畅运行游戏的关键。请根据自身环境选�
 
 额外感谢 [MCHeads](https://mc-heads.net) 提供 Minecraft 头像服务、[Modrinth](https://modrinth.com) 提供资源分发服务，以及 [BMCLAPI](https://bmclapidoc.bangbang93.com) 提供 Minecraft 下载镜像服务。
 
-## 捐赠
-
-如果您觉得这个项目对您有价值，欢迎通过 [Ko-Fi](https://ko-fi.com/herbrine8403)、[爱发电](https://afdian.com/a/herbrine8403) 或[微信赞赏码](donate.png) 进行捐赠支持。
-
 ## Star History
 
-<a href="https://star-history.com/#herbrine8403/Amethyst-iOS-MyRemastered&Date">
+<a href="https://star-history.com/#twoyears666/A-pear&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=herbrine8403/Amethyst-iOS-MyRemastered&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=herbrine8403/Amethyst-iOS-MyRemastered&type=Date" />
-   <img alt="Star history" src="https://api.star-history.com/svg?repos=herbrine8403/Amethyst-iOS-MyRemastered&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=twoyears666/A-pear&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=twoyears666/A-pear&type=Date" />
+   <img alt="Star history" src="https://api.star-history.com/svg?repos=twoyears666/A-pear&type=Date" />
  </picture>
 </a>

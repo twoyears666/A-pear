@@ -215,8 +215,6 @@
 "uipack.welcome.get" = "Get UI Packs";
 "uipack.welcome.legacy" = "Switch to Legacy";
 "uipack.welcome.feedback" = "Feedback";
-"uipack.welcome.soon_title" = "Coming Soon";
-"uipack.welcome.soon_msg" = "The UI pack gallery is on its way. Stay tuned — you can import a pack from Files for now.";
 "preference.title.debug_logging" = "调试日志";
 "preference.detail.debug_logging" = "完整的记录启动器的各种活动事件到latestlog.txt文件内,有助于开发者更容易的发现错误。但Minecraft游戏内FPS可能会降低(频繁的记录日志内容会使得CPU负载变高)";
 "preference.title.jitstreamer_server" = "JitStreamer的服务器地址";
