@@ -274,6 +274,18 @@ class UINodeLayoutContracts(unittest.TestCase):
         self.assertIn("if (self.button) self.button.frame = self.bounds;", NODE_VIEW)
         self.assertNotIn("CGFloat side = MIN(self.bounds.size.width, self.bounds.size.height);", NODE_VIEW)
 
+    def test_leaf_content_sized_before_stack_early_return(self):
+        # 叶子内容布局必须在栈早退之前：button/text/image 均为叶子节点（非 stack），
+        # 早退后其 UIKit 子视图永远停留在 CGRectZero —— 按钮与文字整体不可见，
+        # 只剩容器背景色（真机 PCL2 包首渲暴露：顶栏/左栏背景在，导航与主题按钮全缺失）
+        early_return = NODE_VIEW.index("if (!self.horizontalStack && !self.verticalStack) return;")
+        button_fill = NODE_VIEW.index("if (self.button) self.button.frame = self.bounds;")
+        text_fill = NODE_VIEW.index("if (self.textLabel) self.textLabel.frame = self.bounds;")
+        image_fill = NODE_VIEW.index("if (self.contentImageView) self.contentImageView.frame = self.bounds;")
+        self.assertLess(button_fill, early_return, "button.frame 赋值必须位于栈早退之前")
+        self.assertLess(text_fill, early_return, "textLabel.frame 赋值必须位于栈早退之前")
+        self.assertLess(image_fill, early_return, "contentImageView.frame 赋值必须位于栈早退之前")
+
     def test_nested_container_autosize(self):
         # 嵌套 row/column 在父栈中必须能测出聚合首选尺寸，否则高度塌为 0
         self.assertIn("if (self.horizontalStack || self.verticalStack) {", NODE_VIEW)

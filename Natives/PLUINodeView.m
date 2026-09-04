@@ -323,15 +323,18 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    if (!self.horizontalStack && !self.verticalStack) return;
-    BOOL horizontal = self.horizontalStack;
 
-    // 叶子内容贴合自身 bounds
+    // 叶子内容贴合自身 bounds。必须在栈早退之前执行：button/text/image 都是
+    // 叶子节点（非 stack），早退后它们的 UIKit 子视图永远停留在 CGRectZero
+    // ——按钮/文字整体不可见，只剩容器背景色（真机首渲即暴露）。
     if (self.textLabel) self.textLabel.frame = self.bounds;
     if (self.contentImageView) self.contentImageView.frame = self.bounds;
     // 按钮铺满节点：宽文字按钮（如 PCL2 启动按钮）与图标按钮都能正确渲染，
     // UIButton 自身负责图文内容居中。此前按 min(宽,高) 居中裁切文字按钮。
     if (self.button) self.button.frame = self.bounds;
+
+    if (!self.horizontalStack && !self.verticalStack) return;
+    BOOL horizontal = self.horizontalStack;
 
     NSArray<PLUINodeView *> *children = [self.subviews isKindOfClass:NSArray.class] ? (NSArray *)self.subviews : nil;
     if (children.count == 0) return;
