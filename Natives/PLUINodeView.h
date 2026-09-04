@@ -51,6 +51,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)updateTextColorSpec:(nullable NSString *)colorSpec;
 - (void)updateEnabled:(BOOL)enabled;
 
+/// 是否内含 UIButton 控件（button / nav item 节点）。
+@property (nonatomic, readonly) BOOL hasButtonControl;
+/// 为带 action 的非按钮节点挂轻点手势（容器型可点击节点，如 PCL2 两行启动按钮）。
+/// cancelsTouchesInView=NO：不拦截子控件（UIButton）自身的触摸。
+- (void)attachTapGestureIfNeeded;
+/// 样式更新（launcher.view(id):setStyle 的落点）：
+/// background / tint / borderColor / borderWidth / corner（数字或 "pill"）。
+- (void)updateStyleSpec:(nullable NSDictionary *)spec;
+
 @end
 
 NS_ASSUME_NONNULL_END

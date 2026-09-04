@@ -1,4 +1,5 @@
 #import "PLUIActionRouter.h"
+#import "LauncherLaunchService.h"
 #import "PLProfiles.h"
 #import "utils.h"
 
@@ -24,13 +25,13 @@ static NSDictionary<NSString *, NSString *> *PLUIActionNotificationMap(void) {
     return map;
 }
 
-/// M4 由 LauncherLaunchService 接管的动作（当前记录日志不执行）。
+/// 已由 LauncherLaunchService 接管的动作。
 static NSSet<NSString *> *PLUIActionReservedForLaunchService(void) {
     static NSSet *actions;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         actions = [NSSet setWithArray:@[
-            @"launch", @"pickVersion", @"executeJar", @"openDownloadCenter", @"selectAccount",
+            @"pickVersion", @"executeJar", @"openDownloadCenter", @"selectAccount",
         ]];
     });
     return actions;
@@ -71,6 +72,12 @@ static NSSet<NSString *> *PLUIActionReservedForLaunchService(void) {
                                                     handler:nil]];
             [presenter presentViewController:alert animated:YES completion:nil];
         }
+        return;
+    }
+
+    // M4：launch 动作接通真实启动链路（账号检查→版本解析→完整性下载→JIT→进游戏）
+    if ([action isEqualToString:@"launch"]) {
+        [[LauncherLaunchService sharedService] launchGameFromViewController:presenter];
         return;
     }
 
