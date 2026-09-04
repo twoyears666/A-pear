@@ -223,9 +223,9 @@ class ShellContracts(unittest.TestCase):
         self.assertIn("uipack.welcome.feedback", SHELL_VC)
 
     def test_welcome_actions(self):
-        # 切旧引擎：写偏好 + UIShellChanged；反馈：pear issues；导入：文档选择器
+        # 切旧引擎：写偏好 + UIShellChanged；反馈：A-pear issues；导入：文档选择器
         self.assertIn('setPrefObject(@"general.ui_shell", @"legacy")', SHELL_VC)
-        self.assertIn("github.com/twoyears666/pear/issues", SHELL_VC)
+        self.assertIn("github.com/twoyears666/A-pear/issues", SHELL_VC)
         self.assertIn("UIDocumentPickerViewController", SHELL_VC)
         self.assertIn("importPackFromURL", SHELL_VC)
 

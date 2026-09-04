@@ -63,7 +63,7 @@ typedef NS_ENUM(NSInteger, CrashType) {
 
 // 当前正在显示的崩溃 VC 实例（单例）
 static PLCrashView *currentCrashVC = nil;
-static NSString *const kGitHubIssuesURL = @"https://github.com/twoyears666/pear/issues";
+static NSString *const kGitHubIssuesURL = @"https://github.com/twoyears666/A-pear/issues";
 
 #pragma mark - Public Methods
 

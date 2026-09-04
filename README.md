@@ -6,10 +6,10 @@
 <p align="center"><sub>Amethyst iOS Remastered</sub></p>
 
 <div align="center">
-  <img alt="Build Status" src="https://github.com/twoyears666/pear/actions/workflows/development.yml/badge.svg?branch=main">
-  <img alt="Downloads" src="https://img.shields.io/github/downloads/twoyears666/pear/total?label=Downloads&style=flat">
-  <img alt="Release" src="https://img.shields.io/github/v/release/twoyears666/pear?style=flat">
-  <img alt="License" src="https://img.shields.io/github/license/twoyears666/pear?style=flat">
+  <img alt="Build Status" src="https://github.com/twoyears666/A-pear/actions/workflows/development.yml/badge.svg?branch=main">
+  <img alt="Downloads" src="https://img.shields.io/github/downloads/twoyears666/A-pear/total?label=Downloads&style=flat">
+  <img alt="Release" src="https://img.shields.io/github/v/release/twoyears666/A-pear?style=flat">
+  <img alt="License" src="https://img.shields.io/github/license/twoyears666/A-pear?style=flat">
   <a title="Crowdin" target="_blank" href="https://crowdin.com/project/amethyst-ios-remastered"><img alt="Crowdin" src="https://badges.crowdin.net/amethyst-ios-remastered/localized.svg">
 </div>
 
@@ -107,7 +107,7 @@ Prioritize tools that support permanent signing and automatic JIT enablement:
 <details>
 <summary><b>Official Release (TrollStore)</b></summary>
 
-1. Download the `.tipa` package from [Releases](https://github.com/twoyears666/pear/releases).
+1. Download the `.tipa` package from [Releases](https://github.com/twoyears666/A-pear/releases).
 2. Open the file with TrollStore via the system share menu to complete installation.
 
 </details>
@@ -115,7 +115,7 @@ Prioritize tools that support permanent signing and automatic JIT enablement:
 <details>
 <summary><b>Official Release (AltStore / SideStore)</b></summary>
 
-1. Download the `.ipa` package from [Releases](https://github.com/twoyears666/pear/releases).
+1. Download the `.ipa` package from [Releases](https://github.com/twoyears666/A-pear/releases).
 2. Import the IPA into your sideloading tool following its standard installation procedure.
 
 </details>
@@ -126,7 +126,7 @@ Prioritize tools that support permanent signing and automatic JIT enablement:
 > \[!CAUTION]
 > Nightly builds may contain critical bugs including crashes and startup failures. Use only for development and testing purposes.
 
-1. Navigate to the [GitHub Actions](https://github.com/twoyears666/pear/actions) page and download the latest IPA artifact.
+1. Navigate to the [GitHub Actions](https://github.com/twoyears666/A-pear/actions) page and download the latest IPA artifact.
 2. Import the IPA into your sideloading tool (AltStore, SideStore, etc.) to install.
 
 </details>
@@ -202,10 +202,10 @@ Additional thanks to [MCHeads](https://mc-heads.net) for Minecraft avatar servic
 
 ## Star History
 
-<a href="https://www.star-history.com/?type=date&repos=twoyears666%2Fpear">
+<a href="https://www.star-history.com/?type=date&repos=twoyears666%2FA-pear">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=twoyears666/pear&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=twoyears666/pear&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=twoyears666/pear&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=twoyears666/A-pear&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=twoyears666/A-pear&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=twoyears666/A-pear&type=date&legend=top-left" />
  </picture>
 </a>

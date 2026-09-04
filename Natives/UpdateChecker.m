@@ -12,7 +12,7 @@
 @implementation UpdateChecker
 
 + (NSString *)repoOwner { return @"twoyears666"; }
-+ (NSString *)repoName { return @"pear"; }
++ (NSString *)repoName { return @"A-pear"; }
 
 + (NSString *)latestReleaseURL {
     /* /releases/latest 接口自动返回最新的非 pre-release（正式版） */

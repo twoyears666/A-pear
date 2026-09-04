@@ -736,7 +736,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)welcomeFeedbackTapped {
-    NSURL *url = [NSURL URLWithString:@"https://github.com/twoyears666/pear/issues"];
+    NSURL *url = [NSURL URLWithString:@"https://github.com/twoyears666/A-pear/issues"];
     if (!url) return;
     [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
 }
