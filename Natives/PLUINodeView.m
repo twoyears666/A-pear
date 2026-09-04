@@ -111,6 +111,13 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 @property (nonatomic, assign) UIEdgeInsets padding;
 @property (nonatomic, assign) CGFloat fixedWidth;
 @property (nonatomic, assign) CGFloat fixedHeight;
+@property (nonatomic, assign) CGFloat widthPercent;   // "85%" 相对父容器主/交叉轴
+@property (nonatomic, assign) CGFloat heightPercent;
+@property (nonatomic, assign) PLUIJustify justify;
+@property (nonatomic, assign) PLUICrossAlign crossAlign;
+@property (nonatomic, assign) BOOL pillCorner;        // corner="pill"：圆角=高/2，布局时生效
+@property (nonatomic, strong, nullable) CAGradientLayer *gradientLayer;
+@property (nonatomic, strong, nullable) UITapGestureRecognizer *tapGesture;
 @property (nonatomic, assign) UIRectEdge outerEdges;
 @property (nonatomic, copy) NSString *initialPage;
 @property (nonatomic, strong) UILabel *textLabel;
@@ -152,9 +159,42 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _padding = PLUIResolvePadding(node[@"padding"]);
     _fixedWidth = PLUIResolveDimen(node[@"width"], compact);
     _fixedHeight = PLUIResolveDimen(node[@"height"], compact);
+    // 百分比尺寸（"85%"）：仅在无固定值时参与布局（主轴=占父主轴比例，交叉轴同理）
+    _widthPercent = isnan(_fixedWidth) ? PLUIResolvePercent(node[@"width"]) : 0;
+    _heightPercent = isnan(_fixedHeight) ? PLUIResolvePercent(node[@"height"]) : 0;
+    _justify = PLUIResolveJustify(node[@"justify"]);
+    _crossAlign = PLUIResolveCrossAlign(node[@"crossAlign"]);
     _initialPage = [node[@"initialPage"] isKindOfClass:NSString.class] ? node[@"initialPage"] : nil;
 
-    self.backgroundColor = PLUIResolveColor(node[@"background"], self.backgroundColor);
+    // 背景：字符串=纯色；字典 {from,to,angle}=线性渐变（PCL2 内容区对角渐变）
+    if ([node[@"background"] isKindOfClass:NSDictionary.class]) {
+        NSDictionary *grad = node[@"background"];
+        UIColor *from = PLUIResolveColor(grad[@"from"], nil);
+        UIColor *to = PLUIResolveColor(grad[@"to"], nil);
+        if (from && to) {
+            CAGradientLayer *layer = [CAGradientLayer layer];
+            layer.colors = @[(__bridge id)from.CGColor, (__bridge id)to.CGColor];
+            CGFloat angle = [grad[@"angle"] isKindOfClass:NSNumber.class] ? [grad[@"angle"] doubleValue] : 45.0;
+            CGFloat rad = angle * M_PI / 180.0;
+            layer.startPoint = CGPointMake(0.5 - cos(rad) / 2.0, 0.5 - sin(rad) / 2.0);
+            layer.endPoint = CGPointMake(0.5 + cos(rad) / 2.0, 0.5 + sin(rad) / 2.0);
+            [self.layer insertSublayer:layer atIndex:0];
+            _gradientLayer = layer;
+            self.backgroundColor = UIColor.clearColor;
+        }
+    } else {
+        self.backgroundColor = PLUIResolveColor(node[@"background"], self.backgroundColor);
+    }
+
+    // 描边：border = { width, color }（PCL2 白底蓝描边按钮 / 卡片描边）
+    if ([node[@"border"] isKindOfClass:NSDictionary.class]) {
+        NSDictionary *border = node[@"border"];
+        CGFloat bw = [border[@"width"] isKindOfClass:NSNumber.class] ? [border[@"width"] doubleValue] : 0;
+        if (bw > 0) {
+            self.layer.borderWidth = bw;
+            self.layer.borderColor = PLUIResolveColor(border[@"color"], UIColor.separatorColor).CGColor;
+        }
+    }
 
     // 尺寸：size = 正方形边长
     CGFloat square = PLUIResolveDimen(node[@"size"], compact);
@@ -261,6 +301,11 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         [_button setImage:icon forState:UIControlStateNormal];
     }
     _button.backgroundColor = PLUIResolveColor(style[@"background"], _button.backgroundColor);
+    // 药丸页签等图文按钮的水平内边距（节点 padding 映射到按钮 contentEdgeInsets）
+    UIEdgeInsets btnPad = PLUIResolvePadding(node[@"padding"]);
+    if (!UIEdgeInsetsEqualToEdgeInsets(btnPad, UIEdgeInsetsZero)) {
+        _button.contentEdgeInsets = btnPad;
+    }
     [self addSubview:_button];
     [_button addTarget:self action:@selector(nodeTapped:) forControlEvents:UIControlEventTouchUpInside];
 }
@@ -281,11 +326,19 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _contentImageView.translatesAutoresizingMaskIntoConstraints = YES;
     _contentImageView.contentMode = UIViewContentModeScaleAspectFit;
     _contentImageView.image = PLUIResolveImage(node[@"icon"] ?: node[@"src"]);
+    NSDictionary *style = [node[@"style"] isKindOfClass:NSDictionary.class] ? node[@"style"] : @{};
+    _contentImageView.tintColor = PLUIResolveColor(style[@"tint"], _contentImageView.tintColor);
     _contentImageView.backgroundColor = PLUIResolveColor(node[@"background"], _contentImageView.backgroundColor);
     [self addSubview:_contentImageView];
 }
 
 - (void)applyCorner:(NSDictionary *)node {
+    // "pill"：全圆药丸（PCL2 顶栏选中页签/胶囊标签），圆角=高/2，布局时应用
+    if ([node[@"corner"] isKindOfClass:NSString.class] &&
+        [node[@"corner"] isEqualToString:@"pill"]) {
+        _pillCorner = YES;
+        return;
+    }
     CGFloat corner = [node[@"corner"] isKindOfClass:NSNumber.class] ? [node[@"corner"] doubleValue] : 0;
     if (corner <= 0) return;
     NSString *mask = [node[@"cornerMask"] isKindOfClass:NSString.class] ? node[@"cornerMask"] : @"all";
@@ -324,6 +377,10 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 - (void)layoutSubviews {
     [super layoutSubviews];
 
+    // 药丸圆角与渐变层依赖最终 frame，在叶子/栈布局前先应用
+    if (_pillCorner) self.layer.cornerRadius = self.bounds.size.height / 2.0;
+    if (_gradientLayer) _gradientLayer.frame = self.bounds;
+
     // 叶子内容贴合自身 bounds。必须在栈早退之前执行：button/text/image 都是
     // 叶子节点（非 stack），早退后它们的 UIKit 子视图永远停留在 CGRectZero
     // ——按钮/文字整体不可见，只剩容器背景色（真机首渲即暴露）。
@@ -357,6 +414,11 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         PLUINodeView *child = (PLUINodeView *)sub;
         if (child.weight > 0) {
             weightSum += child.weight;
+        } else if (horizontal && child.widthPercent > 0) {
+            // 主轴百分比："32%" 占父主轴内容长度（PCL2 左栏 32% 宽）
+            main = child.widthPercent * mainLen;
+        } else if (!horizontal && child.heightPercent > 0) {
+            main = child.heightPercent * mainLen;
         } else if (horizontal && !isnan(child.fixedWidth)) {
             main = child.fixedWidth;
         } else if (!horizontal && !isnan(child.fixedHeight)) {
@@ -372,17 +434,48 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     CGFloat weightedAvail = mainLen - spacingTotal - fixedTotal;
     if (weightedAvail < 0) weightedAvail = 0;
 
-    CGFloat offset = horizontal ? pad.left : pad.top;
+    // 主轴分布：非权重内容块的整体偏移（PCL2 启动按钮两行文字垂直居中）
+    CGFloat leadingExtra = 0;
+    if (_justify == PLUIJustifyCenter) {
+        leadingExtra = (mainLen - spacingTotal - fixedTotal) / 2.0;
+    } else if (_justify == PLUIJustifyEnd) {
+        leadingExtra = mainLen - spacingTotal - fixedTotal;
+    }
+    if (leadingExtra < 0) leadingExtra = 0;
+
+    CGFloat offset = (horizontal ? pad.left : pad.top) + leadingExtra;
     for (NSUInteger i = 0; i < n; i++) {
         PLUINodeView *child = children[i];
         CGFloat main = mains[i].doubleValue;
         if (isnan(main)) {
             main = (weightSum > 0 && child.weight > 0) ? weightedAvail * child.weight / weightSum : 0;
         }
-        if (horizontal) {
-            child.frame = CGRectMake(offset, pad.top, main, crossLen);
+
+        // 交叉轴尺寸：百分比 > stretch 铺满 > 按子节点自身尺寸对齐（start/center/end）
+        CGFloat crossPct = horizontal ? child.heightPercent : child.widthPercent;
+        CGFloat childCross;
+        if (crossPct > 0) {
+            childCross = crossPct * crossLen;
+        } else if (_crossAlign == PLUICrossAlignStretch) {
+            childCross = crossLen;
         } else {
-            child.frame = CGRectMake(pad.left, offset, crossLen, main);
+            CGFloat fixedCross = horizontal ? child.fixedHeight : child.fixedWidth;
+            if (!isnan(fixedCross)) {
+                childCross = fixedCross;
+            } else {
+                CGSize fit = [child sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+                childCross = horizontal ? fit.height : fit.width;
+            }
+            if (childCross > crossLen) childCross = crossLen;
+        }
+        CGFloat alignFactor = (_crossAlign == PLUICrossAlignCenter) ? 0.5
+                          : ((_crossAlign == PLUICrossAlignEnd) ? 1.0 : 0.0);
+        CGFloat crossOffset = (horizontal ? pad.top : pad.left) + (crossLen - childCross) * alignFactor;
+
+        if (horizontal) {
+            child.frame = CGRectMake(offset, crossOffset, main, childCross);
+        } else {
+            child.frame = CGRectMake(crossOffset, offset, childCross, main);
         }
         offset += main + self.spacing;
     }
@@ -485,6 +578,60 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
 - (void)updateEnabled:(BOOL)enabled {
     if (self.button) self.button.enabled = enabled;
+}
+
+#pragma mark - 手势与样式（launcher.view(id):setStyle / 容器可点击）
+
+- (BOOL)hasButtonControl {
+    return self.button != nil;
+}
+
+- (void)attachTapGestureIfNeeded {
+    // 带动作的非按钮节点（如 PCL2 两行启动按钮 = column + 两个 text）挂轻点手势；
+    // cancelsTouchesInView=NO 不拦截内嵌 UIButton 的触摸（若包作者混用，动作会双发，
+    // 由包自行避免"容器带 action 且内含 action 按钮"的组合）。
+    if (self.action.length == 0 || self.button) return;
+    if (_tapGesture) return;
+    _tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(nodeTapped:)];
+    _tapGesture.cancelsTouchesInView = NO;
+    self.userInteractionEnabled = YES;
+    [self addGestureRecognizer:_tapGesture];
+}
+
+- (void)updateStyleSpec:(NSDictionary *)spec {
+    if (![spec isKindOfClass:NSDictionary.class]) return;
+    id bg = spec[@"background"];
+    if ([bg isKindOfClass:NSString.class] && [(NSString *)bg length] > 0) {
+        // 动态样式不支持渐变（渐变节点不在 setStyle 目标之列）
+        if (_gradientLayer) {
+            [_gradientLayer removeFromSuperlayer];
+            _gradientLayer = nil;
+        }
+        self.backgroundColor = PLUIResolveColor(bg, self.backgroundColor);
+    }
+    id tint = spec[@"tint"];
+    if ([tint isKindOfClass:NSString.class]) {
+        UIColor *color = PLUIResolveColor(tint, nil);
+        if (color) {
+            if (self.button) [self.button setTitleColor:color forState:UIControlStateNormal];
+            if (self.textLabel) self.textLabel.textColor = color;
+        }
+    }
+    id bw = spec[@"borderWidth"];
+    if ([bw isKindOfClass:NSNumber.class]) self.layer.borderWidth = [bw doubleValue];
+    id bc = spec[@"borderColor"];
+    if ([bc isKindOfClass:NSString.class]) {
+        UIColor *color = PLUIResolveColor(bc, nil);
+        if (color) self.layer.borderColor = color.CGColor;
+    }
+    id corner = spec[@"corner"];
+    if ([corner isKindOfClass:NSString.class] && [corner isEqualToString:@"pill"]) {
+        _pillCorner = YES;
+    } else if ([corner isKindOfClass:NSNumber.class]) {
+        _pillCorner = NO;
+        self.layer.cornerRadius = [corner doubleValue];
+    }
+    [self setNeedsLayout];
 }
 
 #pragma mark - 元数据

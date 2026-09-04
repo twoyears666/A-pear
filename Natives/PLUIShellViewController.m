@@ -33,6 +33,8 @@
 @property (nonatomic, assign) BOOL isShowingProfileEditor;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *localVersionList;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
+/// 当前内容页标识（home/download/settings/...），变化时向 Lua 包派发 onPageChange
+@property (nonatomic, copy, nullable) NSString *currentLuaPage;
 @end
 
 @implementation PLUIShellViewController
@@ -56,6 +58,7 @@
     self.contentNode = nil;
     self.engine = nil;
     self.runtime = nil;
+    self.currentLuaPage = nil; // 重建后重新派发 onPageChange（Lua 状态已随新 VM 重置）
 
     // 无激活包（未导入且未选中 UI 包）→ 欢迎界面：不渲染引擎，
     // 提供 导入 UI 包 / 获取 UI 包 / 切回旧引擎 / 问题反馈，作为闪退的兜底。
@@ -107,6 +110,8 @@
     __weak typeof(self) weakSelf = self;
     [self.engine enumerateNodes:^(PLUINodeView *node) {
         if (!node.action) return;
+        // 容器型可点击节点（非按钮）由引擎挂轻点手势，按钮节点走 UIControl 事件
+        [node attachTapGestureIfNeeded];
         node.tapHandler = ^(PLUINodeView *tapped) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -140,6 +145,9 @@
             node.hidden = ![argument boolValue];
         } else if ([command isEqualToString:@"setEnabled"]) {
             [node updateEnabled:[argument boolValue]];
+        } else if ([command isEqualToString:@"setStyle"]) {
+            // 样式热更新（PCL2 顶栏页签选中态药丸）：background/tint/border/corner
+            [node updateStyleSpec:[argument isKindOfClass:NSDictionary.class] ? argument : nil];
         }
         return YES;
     };
@@ -453,6 +461,36 @@
 
 #pragma mark - Content Switching（整段搬迁自 LauncherRootViewController，保留全部历史修复注释）
 
+/// 内容页 VC 类 → 页面标识（onPageChange 派发与 restorePageForClass 共用语义）
++ (NSString *)pageIdentifierForViewController:(UIViewController *)viewController {
+    UIViewController *target = viewController;
+    if ([target isKindOfClass:UINavigationController.class]) {
+        target = ((UINavigationController *)target).topViewController;
+    }
+    NSDictionary *mapping = @{
+        @"LauncherNewsViewController": @"home",
+        @"DownloadViewController": @"download",
+        @"VersionManagerViewController": @"versionManager",
+        @"LauncherPreferencesViewController": @"settings",
+        @"AIViewController": @"ai",
+        @"ModsManagerViewController": @"mods",
+        @"ShadersManagerViewController": @"shaders",
+        @"ModpackImportViewController": @"modpackImport",
+        @"LauncherPrefGameDirViewController": @"gameDirectory",
+        @"AccountListViewController": @"accountManager",
+        @"ProfileSettingsViewController": @"profileEditor",
+    };
+    return mapping[NSStringFromClass(target.class)];
+}
+
+/// 内容页变化时通知 Lua 包（页签选中态等跟随真实页面而非仅点击）
+- (void)notifyLuaPageChangedForViewController:(UIViewController *)viewController {
+    NSString *pageId = [self.class pageIdentifierForViewController:viewController];
+    if (!pageId || [pageId isEqualToString:self.currentLuaPage]) return;
+    self.currentLuaPage = pageId;
+    [self.runtime dispatchEvent:@"onPageChange" arguments:@[pageId]];
+}
+
 - (void)setContentViewController:(UIViewController *)viewController animated:(BOOL)animated {
     if (!viewController) return;
     if (!self.contentNode) {
@@ -533,6 +571,7 @@
     }
 
     self.currentContentConstraints = newConstraints;
+    [self notifyLuaPageChangedForViewController:viewController];
 }
 
 #pragma mark - Orientation
