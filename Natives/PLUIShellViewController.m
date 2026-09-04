@@ -514,6 +514,8 @@
     self.contentViewController = viewController;
     [self addChildViewController:viewController];
     viewController.view.translatesAutoresizingMaskIntoConstraints = NO;
+    // 约束生效前先按内容区 frame 预对齐，避免切换首帧从 (0,0) 左上角闪现（真机反馈）
+    viewController.view.frame = self.contentNode.bounds;
 
     // FCL 风格：对 UINavigationController 应用 nav bar 毛玻璃效果，并对内容 VC 透明化处理，
     // 避免顶部出现默认白色 nav bar 形成"大白条"。
