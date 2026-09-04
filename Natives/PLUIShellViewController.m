@@ -24,7 +24,7 @@
 #import "AI/AiSessionStore.h"
 #import "authenticator/BaseAuthenticator.h"
 
-@interface PLUIShellViewController () <UINavigationControllerDelegate>
+@interface PLUIShellViewController () <UINavigationControllerDelegate, UIDocumentPickerDelegate>
 @property (nonatomic, strong) PLUILayoutEngine *engine;
 @property (nonatomic, strong) PLLuaRuntime *runtime;
 @property (nonatomic, strong) PLUINodeView *contentNode;
@@ -33,6 +33,7 @@
 @property (nonatomic, assign) BOOL isShowingProfileEditor;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *localVersionList;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
+@property (nonatomic, strong, nullable) UIColor *welcomeBackgroundColor;
 @end
 
 @implementation PLUIShellViewController
@@ -57,11 +58,17 @@
     self.engine = nil;
     self.runtime = nil;
 
-    // 回退链：选中包 → 程序化默认树（包缺失/脚本坏/树非法都落到这里）
-    [PLUIPackManager.sharedManager reload];
-    PLUIPack *pack = PLUIPackManager.sharedManager.activePack;
-    NSDictionary *tree = nil;
-    if (pack) {
+    // 无激活包（未导入且未选中 UI 包）→ 欢迎界面：不渲染引擎，
+    // 提供 导入 UI 包 / 获取 UI 包 / 切回旧引擎 / 问题反馈，作为闪退的兜底。
+    @try {
+        [PLUIPackManager.sharedManager reload];
+        PLUIPack *pack = PLUIPackManager.sharedManager.activePack;
+        if (!pack) {
+            [self buildWelcomeView];
+            return;
+        }
+
+        NSDictionary *tree = nil;
         NSString *source = [PLUIPackManager.sharedManager mainLuaSourceForPack:pack];
         if (source) {
             NSError *error = nil;
@@ -71,23 +78,30 @@
                 if (tree) self.runtime = runtime;
             }
         }
-    }
 
-    PLUILayoutEngine *engine = [PLUILayoutEngine engineWithTree:tree];
-    PLUINodeView *root = [engine buildRootViewInHost:self.view traitCollection:self.traitCollection];
-    if (!root) {
-        // 连程序化默认树都构建失败：视为引擎 bug，抛给 SceneDelegate 的 @try 换回旧壳
-        [NSException raise:@"PLUIShellBuildFailed" format:@"layout engine failed to build root view"];
-    }
-    self.engine = engine;
+        PLUILayoutEngine *engine = [PLUILayoutEngine engineWithTree:tree];
+        PLUINodeView *root = [engine buildRootViewInHost:self.view traitCollection:self.traitCollection];
+        if (!root) {
+            [NSException raise:@"PLUIShellBuildFailed" format:@"layout engine failed to build root view"];
+        }
+        self.engine = engine;
 
-    [self.engine enumerateNodes:^(PLUINodeView *node) {
-        if (node.isContentArea) self.contentNode = node;
-    }];
-    [self wireActions];
-    [self wireRuntime];
-    [self showInitialPage];
-    [self refreshStateAndNotifyReady];
+        [self.engine enumerateNodes:^(PLUINodeView *node) {
+            if (node.isContentArea) self.contentNode = node;
+        }];
+        [self wireActions];
+        [self wireRuntime];
+        [self showInitialPage];
+        [self refreshStateAndNotifyReady];
+    } @catch (NSException *exception) {
+        // 引擎/脚本异常：壳内消化，回欢迎界面（仍可切回旧引擎），不再冒泡闪退。
+        NSLog(@"[PLUIShell] engine build failed: %@ — %@", exception.name, exception.reason);
+        for (UIView *sub in [self.view.subviews copy]) [sub removeFromSuperview];
+        self.contentNode = nil;
+        self.engine = nil;
+        self.runtime = nil;
+        [self buildWelcomeView];
+    }
 }
 
 - (void)wireActions {
@@ -542,6 +556,204 @@
         [[BackgroundManager sharedManager] makeViewControllerTransparent:stackVC];
     }
     [[BackgroundManager sharedManager] applyEffectToNavigationBar:navigationController.navigationBar];
+}
+
+#pragma mark - 欢迎界面（无导入包时的兜底，纯 UIKit，不依赖 Lua 引擎）
+
+/// 取 app 图标：优先用户设置的备用图标，失败退回主图标 / 系统占位图标。
+static UIImage *PLUIWelcomeAppIcon(void) {
+    NSString *alternate = UIApplication.sharedApplication.alternateIconName;
+    if (alternate.length > 0) {
+        UIImage *image = [UIImage imageNamed:alternate];
+        if (image) return image;
+    }
+    id icons = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleIcons"];
+    if ([icons isKindOfClass:NSDictionary.class]) {
+        id primary = ((NSDictionary *)icons)[@"CFBundlePrimaryIcon"];
+        if ([primary isKindOfClass:NSDictionary.class]) {
+            NSString *iconName = ((NSDictionary *)primary)[@"CFBundleIconName"];
+            if ([iconName isKindOfClass:NSString.class]) {
+                UIImage *image = [UIImage imageNamed:iconName];
+                if (image) return image;
+            }
+        }
+    }
+    return [UIImage imageNamed:@"AppIcon60x60"] ?: [UIImage systemImageNamed:@"app.badge.fill"];
+}
+
+- (void)buildWelcomeView {
+    PLThemeManager *theme = PLThemeManager.sharedManager;
+    UIColor *background = [theme colorForToken:@"background" fallback:UIColor.systemBackgroundColor];
+    UIColor *accent = [theme colorForToken:@"accent" fallback:UIColor.systemBlueColor];
+    UIColor *surface = [theme colorForToken:@"surface" fallback:UIColor.secondarySystemBackgroundColor];
+    UIColor *textPrimary = [theme colorForToken:@"textPrimary" fallback:UIColor.labelColor];
+    UIColor *border = [theme colorForToken:@"border" fallback:UIColor.separatorColor];
+
+    UIView *welcome = [[UIView alloc] init];
+    welcome.translatesAutoresizingMaskIntoConstraints = NO;
+    welcome.backgroundColor = background;
+    [self.view addSubview:welcome];
+
+    // 左半区布局锚（宽 45%），图标 + 标题在其垂直居中
+    UILayoutGuide *leftGuide = [[UILayoutGuide alloc] init];
+    [self.view addLayoutGuide:leftGuide];
+    [leftGuide.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor].active = YES;
+    [leftGuide.widthAnchor constraintEqualToAnchor:self.view.widthAnchor multiplier:0.45].active = YES;
+    [leftGuide.topAnchor constraintEqualToAnchor:self.view.topAnchor].active = YES;
+    [leftGuide.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor].active = YES;
+
+    UIImageView *iconView = [[UIImageView alloc] initWithImage:PLUIWelcomeAppIcon()];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.layer.cornerRadius = 28;
+    iconView.clipsToBounds = YES;
+    [iconView.widthAnchor constraintEqualToConstant:120].active = YES;
+    [iconView.heightAnchor constraintEqualToConstant:120].active = YES;
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.text = localize(@"uipack.welcome.title", nil);
+    titleLabel.font = [UIFont systemFontOfSize:24 weight:UIFontWeightSemibold];
+    titleLabel.textColor = textPrimary;
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.adjustsFontSizeToFitWidth = YES;
+
+    UIStackView *leftStack = [[UIStackView alloc] initWithArrangedSubviews:@[iconView, titleLabel]];
+    leftStack.translatesAutoresizingMaskIntoConstraints = NO;
+    leftStack.axis = UILayoutConstraintAxisVertical;
+    leftStack.spacing = 22;
+    leftStack.alignment = UIStackViewAlignmentCenter;
+    [welcome addSubview:leftStack];
+    [leftStack.centerXAnchor constraintEqualToAnchor:leftGuide.centerXAnchor].active = YES;
+    [leftStack.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor].active = YES;
+
+    // 右侧按钮：导入 UI 包 / 获取 UI 包 /（切换旧引擎 | 问题反馈）
+    UIButton *importButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    importButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [importButton setTitle:localize(@"uipack.welcome.import", nil) forState:UIControlStateNormal];
+    [importButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    importButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    importButton.backgroundColor = accent;
+    importButton.layer.cornerRadius = 12;
+    [importButton addTarget:self action:@selector(welcomeImportTapped)
+               forControlEvents:UIControlEventTouchUpInside];
+    [importButton.heightAnchor constraintEqualToConstant:50].active = YES;
+    [importButton.widthAnchor constraintEqualToConstant:260].active = YES;
+
+    UIButton *getButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    getButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [getButton setTitle:localize(@"uipack.welcome.get", nil) forState:UIControlStateNormal];
+    [getButton setTitleColor:accent forState:UIControlStateNormal];
+    getButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
+    getButton.backgroundColor = surface;
+    getButton.layer.cornerRadius = 12;
+    getButton.layer.borderWidth = 1;
+    getButton.layer.borderColor = border.CGColor;
+    [getButton addTarget:self action:@selector(welcomeGetTapped)
+        forControlEvents:UIControlEventTouchUpInside];
+    [getButton.heightAnchor constraintEqualToConstant:50].active = YES;
+    [getButton.widthAnchor constraintEqualToConstant:260].active = YES;
+
+    UIButton *legacyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    legacyButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [legacyButton setTitle:localize(@"uipack.welcome.legacy", nil) forState:UIControlStateNormal];
+    [legacyButton setTitleColor:textPrimary forState:UIControlStateNormal];
+    legacyButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    legacyButton.backgroundColor = surface;
+    legacyButton.layer.cornerRadius = 10;
+    [legacyButton addTarget:self action:@selector(welcomeLegacyTapped)
+               forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *feedbackButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    feedbackButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [feedbackButton setTitle:localize(@"uipack.welcome.feedback", nil) forState:UIControlStateNormal];
+    [feedbackButton setTitleColor:accent forState:UIControlStateNormal];
+    feedbackButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    feedbackButton.backgroundColor = surface;
+    feedbackButton.layer.cornerRadius = 10;
+    [feedbackButton addTarget:self action:@selector(welcomeFeedbackTapped)
+               forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *pairStack = [[UIStackView alloc] initWithArrangedSubviews:@[legacyButton, feedbackButton]];
+    pairStack.axis = UILayoutConstraintAxisHorizontal;
+    pairStack.spacing = 12;
+    pairStack.distribution = UIStackViewDistributionFillEqually;
+    [pairStack.heightAnchor constraintEqualToConstant:44].active = YES;
+    [pairStack.widthAnchor constraintEqualToConstant:260].active = YES;
+
+    UIStackView *buttonStack = [[UIStackView alloc] initWithArrangedSubviews:@[importButton, getButton, pairStack]];
+    buttonStack.translatesAutoresizingMaskIntoConstraints = NO;
+    buttonStack.axis = UILayoutConstraintAxisVertical;
+    buttonStack.spacing = 14;
+    buttonStack.alignment = UIStackViewAlignmentCenter;
+    [welcome addSubview:buttonStack];
+    [buttonStack.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor].active = YES;
+    [buttonStack.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-60].active = YES;
+
+    [welcome.topAnchor constraintEqualToAnchor:self.view.topAnchor].active = YES;
+    [welcome.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor].active = YES;
+    [welcome.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor].active = YES;
+    [welcome.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor].active = YES;
+}
+
+- (void)welcomeImportTapped {
+    // public.item 同时覆盖 zip 与文件夹（import 模式下部分 iOS 版本的 public.folder 不可选）
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initWithDocumentTypes:@[@"public.zip", @"public.item"]
+                       inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.title = localize(@"uipack.welcome.import", nil);
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (urls.count == 0) return;
+    NSError *error = nil;
+    if ([[PLUIPackManager sharedManager] importPackFromURL:urls.firstObject error:&error]) {
+        // 导入成功：重走加载链，有包了 → 引擎渲染
+        [self buildShell];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:localize(@"uipack.import.failed", nil)
+                          message:error.localizedDescription ?: @""
+                   preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil)
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)welcomeGetTapped {
+    // 获取 UI 包（跳转网页）稍后实现，先占位提示
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:localize(@"uipack.welcome.soon_title", nil)
+                          message:localize(@"uipack.welcome.soon_msg", nil)
+                   preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil)
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)welcomeLegacyTapped {
+    setPrefObject(@"general.ui_shell", @"legacy");
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"UIShellChanged" object:@"legacy"];
+}
+
+- (void)welcomeFeedbackTapped {
+    NSURL *url = [NSURL URLWithString:@"https://github.com/twoyears666/pear/issues"];
+    if (!url) return;
+    [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    // 欢迎界面跟随深浅色刷新（引擎路径由布局引擎自行处理）
+    if (self.engine == nil &&
+        previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
+        [self buildShell];
+    }
 }
 
 @end

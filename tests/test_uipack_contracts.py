@@ -201,12 +201,47 @@ class ShellContracts(unittest.TestCase):
         self.assertIn('@"key": @"theme_pack"', PREF_VC)
         self.assertIn("applyThemeIdentifier", PREF_VC)
 
-    def test_builtin_pack_is_ui_pack(self):
-        # pcl-classic 升级为 schemaVersion 2 的 UI 包
-        self.assertIn('"schemaVersion": 2', PACK_MANIFEST)
-        self.assertIn('"entry": "main.lua"', PACK_MANIFEST)
-        self.assertTrue((PACK_ROOT / "main.lua").exists())
+    def test_builtin_pack_is_colors_only(self):
+        # pcl-classic 保持纯颜色包（schemaVersion 1）：新引擎默认显示欢迎界面，
+        # 内置 main.lua 仅作为脚本模板保留（导入到 uipack/active 才作为 UI 包生效）。
+        self.assertIn('"schemaVersion": 1', PACK_MANIFEST)
         self.assertTrue((PACK_ROOT / "colors.json").exists())
+
+    def test_welcome_screen_when_no_pack(self):
+        # 无导入包 → 欢迎界面（不渲染引擎）；引擎异常也在壳内回欢迎界面，不再冒泡闪退
+        self.assertIn("buildWelcomeView", SHELL_VC)
+        self.assertIn("@try", SHELL_VC)
+        self.assertIn("@catch", SHELL_VC)
+
+    def test_welcome_screen_components(self):
+        # 左：app 图标 + 标题；右：导入 / 获取 /（切旧引擎 | 反馈）
+        self.assertIn("PLUIWelcomeAppIcon", SHELL_VC)
+        self.assertIn("uipack.welcome.title", SHELL_VC)
+        self.assertIn("uipack.welcome.import", SHELL_VC)
+        self.assertIn("uipack.welcome.get", SHELL_VC)
+        self.assertIn("uipack.welcome.legacy", SHELL_VC)
+        self.assertIn("uipack.welcome.feedback", SHELL_VC)
+
+    def test_welcome_actions(self):
+        # 切旧引擎：写偏好 + UIShellChanged；反馈：pear issues；导入：文档选择器
+        self.assertIn('setPrefObject(@"general.ui_shell", @"legacy")', SHELL_VC)
+        self.assertIn("github.com/twoyears666/pear/issues", SHELL_VC)
+        self.assertIn("UIDocumentPickerViewController", SHELL_VC)
+        self.assertIn("importPackFromURL", SHELL_VC)
+
+    def test_import_pack_contract(self):
+        # 导入目标 uipack/active：staging 校验 → 原子替换；zip 先拷贝到 tmp 再解压
+        self.assertIn("importPackFromURL", UI_PACK_HEADER)
+        self.assertIn('stringByAppendingPathComponent:@"uipack/active"', UI_PACK_MANAGER)
+        self.assertIn("active-staging", UI_PACK_MANAGER)
+        self.assertIn("hoistWrappedRootDirectoryIfNeeded", UI_PACK_MANAGER)
+        self.assertIn("validateImportedPackAtRoot", UI_PACK_MANAGER)
+        self.assertIn("startAccessingSecurityScopedResource", UI_PACK_MANAGER)
+
+    def test_imported_pack_takes_priority(self):
+        # reload 优先级：导入包（uipack/active，不校验目录名）→ theme_pack 指向的 UI 包
+        self.assertIn("loadPackAtRoot", UI_PACK_MANAGER)
+        self.assertIn("expectedIdentifier:nil", UI_PACK_MANAGER)
 
     def test_builtin_pack_lua_contract(self):
         # 入口脚本：describe + build(ui)，恰好一个 content 挂载点，含事件函数
