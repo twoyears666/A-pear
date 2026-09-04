@@ -33,7 +33,6 @@
 @property (nonatomic, assign) BOOL isShowingProfileEditor;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *localVersionList;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
-@property (nonatomic, strong, nullable) UIColor *welcomeBackgroundColor;
 @end
 
 @implementation PLUIShellViewController

@@ -241,13 +241,13 @@ static NSInteger const PLUIPackImportErrorCodeReplaceFailed = 12;
         if (isDir) {
             // 文件夹导入：整包递归复制到 staging/（保留文件夹本身作为一层，稍后按需上移）
             NSString *dest = [staging stringByAppendingPathComponent:url.lastPathComponent];
-            staged = [fm copyItemAtURL:url toPath:dest error:error];
+            staged = [fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:dest] error:error];
         } else {
             // zip 导入：先拷贝到 tmp 再解压（安全作用域 URL 直接喂 UZKArchive 会读失败，
             // 同 LauncherRightPanelViewController 的 asCopy 修复）。
             NSString *tmpZip = [NSTemporaryDirectory() stringByAppendingPathComponent:@"uipack-import.zip"];
             [fm removeItemAtPath:tmpZip error:nil];
-            staged = [fm copyItemAtURL:url toPath:tmpZip error:error];
+            staged = [fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:tmpZip] error:error];
             if (staged) {
                 UZKArchive *archive = [[UZKArchive alloc] initWithPath:tmpZip error:error];
                 staged = archive && [archive extractFilesTo:staging overwrite:YES error:error];
