@@ -295,6 +295,29 @@ class UINodeLayoutContracts(unittest.TestCase):
         # 固有尺寸查询（双向 CGFLOAT_MAX）时直接返回原始尺寸，避免 aspect-fit 比例溢出
         self.assertIn("if (size.width >= CGFLOAT_MAX && size.height >= CGFLOAT_MAX) return s;", NODE_VIEW)
 
+    def test_cross_axis_defaults_to_stretch(self):
+        # 交叉轴缺省必须 stretch（flexbox 语义）：content 节点 sizeThatFits 为零尺寸、
+        # 权重子节点内容测量贡献 0，缺省按内容对齐会让整链容器交叉轴逐级坍缩
+        # （真机复现：PCL2 包左栏挤成窄条、内容区高 0 全黑；两台设备稳定复现）
+        self.assertIn(
+            "if (![value isKindOfClass:NSString.class]) return PLUICrossAlignStretch;",
+            NODE_VIEW)
+
+    def test_fixed_cross_size_wins_over_stretch(self):
+        # flex 语义：固定交叉尺寸优先于 stretch——固定高药丸在默认 stretch 容器内
+        # 保持原高，不被拉成椭圆。顺序：百分比 > 固定 > stretch > 内容对齐
+        self.assertIn("} else if (!isnan(fixedCross)) {", NODE_VIEW)
+        self.assertIn("} else if (_crossAlign == PLUICrossAlignStretch) {", NODE_VIEW)
+        self.assertLess(
+            NODE_VIEW.index("} else if (!isnan(fixedCross)) {"),
+            NODE_VIEW.index("} else if (_crossAlign == PLUICrossAlignStretch) {"),
+            "固定交叉尺寸分支必须先于 stretch 分支")
+
+    def test_content_view_frame_prealigned_before_constraints(self):
+        # 页面 VC view 添加前必须按内容区 bounds 预对齐：
+        # 约束生效前一帧按默认 frame (0,0) 渲染，真机上表现为「界面从左上角一闪而过」
+        self.assertIn("viewController.view.frame = self.contentNode.bounds;", SHELL_VC)
+
 
 class UIPackCrashRegressionContracts(unittest.TestCase):
     """启动闪退回归：activePack copy 崩溃 + dispatch_once 内异常不可捕获（Amethyst 5.0.0 实机日志）。"""

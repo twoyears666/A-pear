@@ -121,11 +121,15 @@ static PLUIJustify PLUIResolveJustify(id value) {
 }
 
 static PLUICrossAlign PLUIResolveCrossAlign(id value) {
-    if (![value isKindOfClass:NSString.class]) return PLUICrossAlignStart;
+    // 与 flexbox 对齐：缺省 = stretch（子节点铺满交叉轴）。
+    // 此前缺省按内容对齐：content 节点 sizeThatFits 为零尺寸、权重子节点测量贡献 0，
+    // 整链容器交叉轴逐级坍缩（真机复现：左栏挤成窄条、内容区高 0 全黑）。
+    if (![value isKindOfClass:NSString.class]) return PLUICrossAlignStretch;
     NSString *spec = (NSString *)value;
     if ([spec isEqualToString:@"center"]) return PLUICrossAlignCenter;
     if ([spec isEqualToString:@"end"]) return PLUICrossAlignEnd;
     if ([spec isEqualToString:@"stretch"]) return PLUICrossAlignStretch;
+    // 显式但未知的值：保守按内容对齐（start），不拉伸
     return PLUICrossAlignStart;
 }
 
@@ -493,23 +497,22 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
             main = (weightSum > 0 && child.weight > 0) ? weightedAvail * child.weight / weightSum : 0;
         }
 
-        // 交叉轴尺寸：百分比 > stretch 铺满 > 按子节点自身尺寸对齐（start/center/end）
+        // 交叉轴尺寸（flex 语义）：百分比 > 固定尺寸 > stretch 铺满 > 按内容对齐
+        // 固定尺寸优先于 stretch：PCL2 固定高药丸在默认 stretch 容器内保持原高不被拉变形
         CGFloat crossPct = horizontal ? child.heightPercent : child.widthPercent;
+        CGFloat fixedCross = horizontal ? child.fixedHeight : child.fixedWidth;
         CGFloat childCross;
         if (crossPct > 0) {
             childCross = crossPct * crossLen;
+        } else if (!isnan(fixedCross)) {
+            childCross = fixedCross;
         } else if (_crossAlign == PLUICrossAlignStretch) {
             childCross = crossLen;
         } else {
-            CGFloat fixedCross = horizontal ? child.fixedHeight : child.fixedWidth;
-            if (!isnan(fixedCross)) {
-                childCross = fixedCross;
-            } else {
-                CGSize fit = [child sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
-                childCross = horizontal ? fit.height : fit.width;
-            }
-            if (childCross > crossLen) childCross = crossLen;
+            CGSize fit = [child sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+            childCross = horizontal ? fit.height : fit.width;
         }
+        if (childCross > crossLen) childCross = crossLen;
         CGFloat alignFactor = (_crossAlign == PLUICrossAlignCenter) ? 0.5
                           : ((_crossAlign == PLUICrossAlignEnd) ? 1.0 : 0.0);
         CGFloat crossOffset = (horizontal ? pad.top : pad.left) + (crossLen - childCross) * alignFactor;
