@@ -22,7 +22,7 @@
 #import "AccountListViewController.h"
 #import "AI/AIViewController.h"
 #import "AI/AiSessionStore.h"
-#import "BaseAuthenticator.h"
+#import "authenticator/BaseAuthenticator.h"
 
 @interface PLUIShellViewController () <UINavigationControllerDelegate>
 @property (nonatomic, strong) PLUILayoutEngine *engine;
