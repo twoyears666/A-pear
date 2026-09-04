@@ -87,6 +87,48 @@ static UIEdgeInsets PLUIResolvePadding(id value) {
     return UIEdgeInsetsZero;
 }
 
+/// 主轴分布（justify）：默认 start，非权重内容块整体居中/尾部对齐。
+typedef NS_ENUM(uint8_t, PLUIJustify) {
+    PLUIJustifyStart = 0,
+    PLUIJustifyCenter,
+    PLUIJustifyEnd,
+};
+
+/// 交叉轴对齐（crossAlign）：start/center/end 按内容尺寸对齐，stretch 铺满。
+typedef NS_ENUM(uint8_t, PLUICrossAlign) {
+    PLUICrossAlignStart = 0,
+    PLUICrossAlignCenter,
+    PLUICrossAlignEnd,
+    PLUICrossAlignStretch,
+};
+
+/// "32%" → 0.32（相对父容器主/交叉轴内容长度）；非法返回 0（不按百分比布局）。
+static CGFloat PLUIResolvePercent(id value) {
+    if (![value isKindOfClass:NSString.class]) return 0;
+    NSString *spec = (NSString *)value;
+    if (![spec hasSuffix:@"%"]) return 0;
+    double pct = [spec substringToIndex:spec.length - 1].doubleValue;
+    if (pct <= 0 || pct > 100) return 0;
+    return (CGFloat)(pct / 100.0);
+}
+
+static PLUIJustify PLUIResolveJustify(id value) {
+    if (![value isKindOfClass:NSString.class]) return PLUIJustifyStart;
+    NSString *spec = (NSString *)value;
+    if ([spec isEqualToString:@"center"]) return PLUIJustifyCenter;
+    if ([spec isEqualToString:@"end"]) return PLUIJustifyEnd;
+    return PLUIJustifyStart;
+}
+
+static PLUICrossAlign PLUIResolveCrossAlign(id value) {
+    if (![value isKindOfClass:NSString.class]) return PLUICrossAlignStart;
+    NSString *spec = (NSString *)value;
+    if ([spec isEqualToString:@"center"]) return PLUICrossAlignCenter;
+    if ([spec isEqualToString:@"end"]) return PLUICrossAlignEnd;
+    if ([spec isEqualToString:@"stretch"]) return PLUICrossAlignStretch;
+    return PLUICrossAlignStart;
+}
+
 /// 允许进入节点树的节点种类（未知种类整体丢弃，防脏数据扩散）。
 static BOOL PLUIIsKnownKind(NSString *kind) {
     static NSSet<NSString *> *kinds;
