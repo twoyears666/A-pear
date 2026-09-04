@@ -1376,7 +1376,7 @@ static NSString *festivalGreeting(void) {
         return;
     }
     
-    NSURL *url = [NSURL URLWithString:@"https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/releases/latest"];
+    NSURL *url = [NSURL URLWithString:@"https://github.com/twoyears666/pear/releases/latest"];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     [request setHTTPMethod:@"GET"];
     
@@ -1494,7 +1494,7 @@ static NSString *festivalGreeting(void) {
 }
 
 - (void)downloadLatestVersion {
-    NSString *urlString = @"https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/releases/latest";
+    NSString *urlString = @"https://github.com/twoyears666/pear/releases/latest";
     NSURL *url = [NSURL URLWithString:urlString];
     if ([[UIApplication sharedApplication] canOpenURL:url]) {
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];

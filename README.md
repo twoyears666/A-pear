@@ -6,10 +6,10 @@
 <p align="center"><sub>Amethyst iOS Remastered</sub></p>
 
 <div align="center">
-  <img alt="Build Status" src="https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/actions/workflows/development.yml/badge.svg?branch=main">
-  <img alt="Downloads" src="https://img.shields.io/github/downloads/herbrine8403/Amethyst-iOS-MyRemastered/total?label=Downloads&style=flat">
-  <img alt="Release" src="https://img.shields.io/github/v/release/herbrine8403/Amethyst-iOS-MyRemastered?style=flat">
-  <img alt="License" src="https://img.shields.io/github/license/herbrine8403/Amethyst-iOS-MyRemastered?style=flat">
+  <img alt="Build Status" src="https://github.com/twoyears666/pear/actions/workflows/development.yml/badge.svg?branch=main">
+  <img alt="Downloads" src="https://img.shields.io/github/downloads/twoyears666/pear/total?label=Downloads&style=flat">
+  <img alt="Release" src="https://img.shields.io/github/v/release/twoyears666/pear?style=flat">
+  <img alt="License" src="https://img.shields.io/github/license/twoyears666/pear?style=flat">
   <a title="Crowdin" target="_blank" href="https://crowdin.com/project/amethyst-ios-remastered"><img alt="Crowdin" src="https://badges.crowdin.net/amethyst-ios-remastered/localized.svg">
 </div>
 
@@ -33,7 +33,6 @@ A premium Minecraft: Java Edition launcher for iOS and iPadOS, rebuilt from the 
   - [Enabling JIT](#enabling-jit)
 - [Contributors](#contributors)
 - [Third-Party Components](#third-party-components)
-- [Sponsor](#sponsor)
 
 ## Core Features
 
@@ -87,14 +86,14 @@ Prioritize tools that support permanent signing and automatic JIT enablement:
 <details>
 <summary><b>Official Release (TrollStore)</b></summary>
 
-1. Download the `.tipa` package from [Releases](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/releases).
+1. Download the `.tipa` package from [Releases](https://github.com/twoyears666/pear/releases).
 2. Open the file with TrollStore via the system share menu to complete installation.
 </details>
 
 <details>
 <summary><b>Official Release (AltStore / SideStore)</b></summary>
 
-1. Download the `.ipa` package from [Releases](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/releases).
+1. Download the `.ipa` package from [Releases](https://github.com/twoyears666/pear/releases).
 2. Import the IPA into your sideloading tool following its standard installation procedure.
 </details>
 
@@ -104,7 +103,7 @@ Prioritize tools that support permanent signing and automatic JIT enablement:
 > [!CAUTION]
 > Nightly builds may contain critical bugs including crashes and startup failures. Use only for development and testing purposes.
 
-1. Navigate to the [GitHub Actions](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered/actions) page and download the latest IPA artifact.
+1. Navigate to the [GitHub Actions](https://github.com/twoyears666/pear/actions) page and download the latest IPA artifact.
 2. Import the IPA into your sideloading tool (AltStore, SideStore, etc.) to install.
 </details>
 
@@ -161,16 +160,12 @@ If you would like to contribute translations for this project, please go to [Cro
 
 Additional thanks to [MCHeads](https://mc-heads.net) for Minecraft avatar services, [Modrinth](https://modrinth.com) for mod distribution, and [BMCLAPI](https://bmclapidoc.bangbang93.com) for Minecraft download mirroring.
 
-## Sponsor
-
-If you find this project valuable, consider supporting development through [Ko-Fi](https://ko-fi.com/herbrine8403), [Afdian](https://afdian.com/a/herbrine8403), or [WeChat Reward Code](donate.png).
-
 ## Star History
 
-<a href="https://www.star-history.com/?type=date&repos=herbrine8403%2FAmethyst-iOS-MyRemastered">
+<a href="https://www.star-history.com/?type=date&repos=twoyears666%2Fpear">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=herbrine8403/Amethyst-iOS-MyRemastered&type=date&theme=dark&legend=top-left&sealed_token=q1uFKbS7fO8owrcjy_kYTkCnnl8PNgHAgBSrWop8Y3ULDdvwOwDfORslSVVXABSTwrsdu14OM3fshRaNbXouxMU5IenXF0T5r5L6rxKIN2n29T6Fv4UYyA" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=herbrine8403/Amethyst-iOS-MyRemastered&type=date&legend=top-left&sealed_token=q1uFKbS7fO8owrcjy_kYTkCnnl8PNgHAgBSrWop8Y3ULDdvwOwDfORslSVVXABSTwrsdu14OM3fshRaNbXouxMU5IenXF0T5r5L6rxKIN2n29T6Fv4UYyA" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=herbrine8403/Amethyst-iOS-MyRemastered&type=date&legend=top-left&sealed_token=q1uFKbS7fO8owrcjy_kYTkCnnl8PNgHAgBSrWop8Y3ULDdvwOwDfORslSVVXABSTwrsdu14OM3fshRaNbXouxMU5IenXF0T5r5L6rxKIN2n29T6Fv4UYyA" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=twoyears666/pear&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=twoyears666/pear&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=twoyears666/pear&type=date&legend=top-left" />
  </picture>
 </a>

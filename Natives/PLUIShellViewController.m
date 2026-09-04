@@ -724,15 +724,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)welcomeGetTapped {
-    // 获取 UI 包（跳转网页）稍后实现，先占位提示
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:localize(@"uipack.welcome.soon_title", nil)
-                          message:localize(@"uipack.welcome.soon_msg", nil)
-                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil)
-                                              style:UIAlertActionStyleDefault
-                                            handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    // 获取 UI 包：跳转 Pear-ui 仓库 Releases（含 pcl2-totoro-blue 等材质包 zip）
+    NSURL *url = [NSURL URLWithString:@"https://github.com/twoyears666/Pear-ui/releases"];
+    if (!url) return;
+    [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
 }
 
 - (void)welcomeLegacyTapped {

@@ -215,8 +215,6 @@
 "uipack.welcome.get" = "UIパックを入手";
 "uipack.welcome.legacy" = "旧エンジンに切替";
 "uipack.welcome.feedback" = "フィードバック";
-"uipack.welcome.soon_title" = "近日公開";
-"uipack.welcome.soon_msg" = "UIパックの入手ページは近日公開予定です。それまでは「ファイル」からUIパックを読み込めます。";
 "preference.title.debug_logging" = "デバッグログ";
 "preference.detail.debug_logging" = "内部設定とアクションをlatestlog.txtに記録します。 これにより、開発者は問題を簡単に見つけることができますが、ログがより頻繁に書き込まれるため、Minecraft の動作が遅くなる可能性があります。";
 "preference.title.jitstreamer_server" = "JitStreamer サーバー IP";

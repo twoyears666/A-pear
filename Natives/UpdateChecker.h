@@ -17,7 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// 更新检查器（参考 FCL/ZL2，使用 GitHub Releases API）
 ///
 /// 正式版检查：访问 /releases/latest 接口，GitHub 自动返回最新的非 pre-release。
-/// 项目地址：https://github.com/herbrine8403/Amethyst-iOS-MyRemastered
+/// 项目地址：https://github.com/twoyears666/pear
 @interface UpdateChecker : NSObject
 
 /// 仓库所有者

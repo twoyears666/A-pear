@@ -150,7 +150,7 @@
 1.  在每次更改完源代码后，需要将更改提交到 GitHub 远程分支以构建项目进行测试。
 2.  如果在提交到 GitHub 过程中出现网络问题，请提醒用户关闭网络代理。
 3.  此项目使用 Xcode 15.4/16，iPhoneOS 17.5 SDK 构建，且最低系统支持为 iOS 14.0。
-4.  Git 提交时请使用 `herbrine8403` 用户名和 `weishixvn@outlook.com` 邮箱。
+4.  Git 提交时请使用 `twoyears666` 用户名和 `195612193+twoyears666@users.noreply.github.com` 邮箱。
 5.  项目支持多平台构建，包括 iOS、tvOS、iOS 模拟器和 visionOS，通过 `PLATFORM` 参数指定。
 6.  渲染器设置为 Auto 时固定解析为 ANGLE；其他渲染后端需手动明确选择。
 7.  JVM 版本将根据游戏版本自动选择 (Java 8/17/21)。
