@@ -37,25 +37,23 @@ include_directories(
   "external/mach"
   # vendored Lua 5.4（UI 材质包脚本引擎，沙箱裁剪版）
   "external/lua"
-  # "external/ZeroTierFramework/ios-example-app/zt.framework/Headers"  # ZeroTier 暂时移除
+  "external/ZeroTierFramework/ios-example-app/zt.framework/Headers"
 )
 
 # ============================================================================
-# ZeroTier Apple Framework 集成 —— 暂时移除（注释掉以排查启动崩溃）
+# ZeroTier Apple Framework 集成 —— 已恢复
+#（临时移除用于排查启动崩溃；根因 PLUIPack NSCopying 已修复，见 PR #5）
 # ============================================================================
-# set(ZT_FRAMEWORK_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ZeroTierFramework/ios-example-app")
-# set(ZT_FRAMEWORK_LIB "${ZT_FRAMEWORK_DIR}/zt.framework/zt")
-# if(EXISTS "${ZT_FRAMEWORK_LIB}")
-#   message(STATUS "Found ZeroTier framework binary: ${ZT_FRAMEWORK_LIB}")
-#   set(ZT_FRAMEWORK_SEARCH_PATH "-F'${ZT_FRAMEWORK_DIR}'")
-#   set(ZT_FRAMEWORK_LINK "-framework zt")
-#   set(ZT_CXX_LIB "-lc++")
-# else()
-#   message(FATAL_ERROR "ZeroTier framework not found at ${ZT_FRAMEWORK_LIB}. Please run: git submodule update --init --recursive")
-# endif()
-set(ZT_FRAMEWORK_SEARCH_PATH "")
-set(ZT_FRAMEWORK_LINK "")
-set(ZT_CXX_LIB "")
+set(ZT_FRAMEWORK_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ZeroTierFramework/ios-example-app")
+set(ZT_FRAMEWORK_LIB "${ZT_FRAMEWORK_DIR}/zt.framework/zt")
+if(EXISTS "${ZT_FRAMEWORK_LIB}")
+  message(STATUS "Found ZeroTier framework binary: ${ZT_FRAMEWORK_LIB}")
+  set(ZT_FRAMEWORK_SEARCH_PATH "-F'${ZT_FRAMEWORK_DIR}'")
+  set(ZT_FRAMEWORK_LINK "-framework zt")
+  set(ZT_CXX_LIB "-lc++")
+else()
+  message(FATAL_ERROR "ZeroTier framework not found at ${ZT_FRAMEWORK_LIB}. Please run: git submodule update --init --recursive")
+endif()
 
 # ============================================================================
 # libterracotta.xcframework 集成（陶瓦联机）—— 暂时移除（注释掉以排查启动崩溃）
@@ -378,13 +376,13 @@ add_executable(AngelAuraAmethyst
   FileListViewController.m
   GameSurfaceView.m
   JavaGUIViewController.m
-  # ZeroTier 联机暂时移除（排查启动崩溃）
-  # MultiplayerManager.m
-  # MultiplayerViewController.m
-  # LanPortDetector.m
-  # ZeroTierBridge.m
-  # SOCKS5Proxy.m
-  # PortForwarder.m
+  # ZeroTier 联机（已恢复：临时移除排查的启动崩溃根因 NSCopying 已在 PR #5 修复）
+  MultiplayerManager.m
+  MultiplayerViewController.m
+  LanPortDetector.m
+  ZeroTierBridge.m
+  SOCKS5Proxy.m
+  PortForwarder.m
   LauncherMenuViewController.m
   LauncherNavigationController.m
   LauncherNewsViewController.m
@@ -403,6 +401,7 @@ add_executable(AngelAuraAmethyst
   PLUILayoutEngine.m
   PLUIActionRouter.m
   PLUIShellViewController.m
+  PLUIMoreViewController.m
   LauncherLaunchService.m
   LauncherPreferencesViewController.m
   LauncherPrefContCfgViewController.m
@@ -606,7 +605,8 @@ target_link_libraries(AngelAuraAmethyst
   lua
   "-F'${CMAKE_CURRENT_LIST_DIR}/build'"
   "-F'${CMAKE_CURRENT_LIST_DIR}/resources/Frameworks'"
-  # ZeroTier 暂时移除："${ZT_FRAMEWORK_SEARCH_PATH}" "${ZT_FRAMEWORK_LINK}" "${ZT_CXX_LIB}"
+  # ZeroTier 联机（已恢复）
+  "${ZT_FRAMEWORK_SEARCH_PATH}" "${ZT_FRAMEWORK_LINK}" "${ZT_CXX_LIB}"
   "-framework AltKit"
   "-framework AuthenticationServices"
   "-framework AVFoundation"

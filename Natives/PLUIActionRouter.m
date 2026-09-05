@@ -1,7 +1,6 @@
 #import "PLUIActionRouter.h"
 #import "LauncherLaunchService.h"
 #import "PLProfiles.h"
-#import "utils.h"
 
 /// 动作名 → Show* 通知名。内容区页面切换全部复用既有通知，零新增逻辑。
 static NSDictionary<NSString *, NSString *> *PLUIActionNotificationMap(void) {
@@ -14,6 +13,9 @@ static NSDictionary<NSString *, NSString *> *PLUIActionNotificationMap(void) {
             @"open:versionManager": @"ShowVersionManager",
             @"open:settings": @"ShowSettings",
             @"open:ai": @"ShowAIPage",
+            @"open:multiplayer": @"ShowMultiplayer",
+            @"open:zeroTier": @"ShowMultiplayer",
+            @"open:more": @"ShowMorePage",
             @"open:mods": @"ShowModsManager",
             @"open:shaders": @"ShowShadersManager",
             @"open:modpackImport": @"ShowModpackImport",
@@ -57,21 +59,6 @@ static NSSet<NSString *> *PLUIActionReservedForLaunchService(void) {
         id object = [action isEqualToString:@"open:profileEditor"]
             ? PLProfiles.current.selectedProfileName : nil;
         [[NSNotificationCenter defaultCenter] postNotificationName:notificationName object:object];
-        return;
-    }
-
-    if ([action isEqualToString:@"open:multiplayer"] || [action isEqualToString:@"open:zeroTier"]) {
-        // ZeroTier/Terracotta 联机暂时移除（与旧壳行为一致：提示不可用）
-        if (presenter) {
-            UIAlertController *alert = [UIAlertController
-                alertControllerWithTitle:localize(@"i18n_str_320", nil)
-                                  message:localize(@"i18n_str_321", nil)
-                           preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_322", nil)
-                                                      style:UIAlertActionStyleDefault
-                                                    handler:nil]];
-            [presenter presentViewController:alert animated:YES completion:nil];
-        }
         return;
     }
 

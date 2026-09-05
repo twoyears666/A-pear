@@ -181,7 +181,8 @@ class ShellContracts(unittest.TestCase):
 
     def test_action_router_covers_open_actions(self):
         for action in ("open:home", "open:download", "open:versionManager",
-                       "open:settings", "open:ai", "open:mods", "open:shaders",
+                       "open:settings", "open:ai", "open:multiplayer",
+                       "open:zeroTier", "open:more", "open:mods", "open:shaders",
                        "open:modpackImport", "open:gameDirectory",
                        "open:accountManager", "open:profileEditor"):
             self.assertIn(f'@"{action}"', ACTION_ROUTER)
@@ -335,3 +336,82 @@ class UIPackCrashRegressionContracts(unittest.TestCase):
         self.assertNotIn("[manager reload]", UI_PACK_MANAGER)
         # 壳在 @try 内先 reload 再取 activePack（异常 → 欢迎界面兜底）
         self.assertIn("[PLUIPackManager.sharedManager reload];", SHELL_VC)
+
+
+class UIThreeIssueFixContracts(unittest.TestCase):
+    """v1.2.0 三修复契约：黑边（透明缝/窗口黑底）、页面导航、背景全窗生效。"""
+
+    def test_shell_backdrop_overrides_black_window_background(self):
+        # 问题 1 根因：壳视图透明化后，Lua 树缝隙/半透明区透出窗口底色，
+        # 而 general.ui_theme 默认 dark → systemBackgroundColor=黑。
+        # 契约：无壁纸铺不透明主题底色（background 令牌），有壁纸保持透明透出壁纸
+        self.assertIn("refreshShellBackdrop", SHELL_VC)
+        self.assertIn("hasBackground", SHELL_VC)
+        self.assertIn('colorForToken:@"background"', SHELL_VC)
+        self.assertIn("[UIColor clearColor]", SHELL_VC)
+        # 背景设置/清除时同步刷新壳底色（切换壁纸不留旧底色）
+        self.assertIn("- (void)backgroundChanged", SHELL_VC)
+
+    def test_fallback_tree_has_no_spacing_gaps(self):
+        # 兜底树根行同样不留缺省 8pt 透明缝
+        self.assertIn('@"id": @"shell"', LAYOUT_ENGINE)
+        self.assertIn('@"spacing": @0', LAYOUT_ENGINE)
+
+    def test_hidden_nodes_collapse_in_stack_layout(self):
+        # 问题 2（PCL2 导航行为）：非启动页收起左栏 → 内容区全幅。
+        # 契约：hidden 子节点不占主轴/spacing，setVisible 触发父容器重排
+        self.assertIn("visibleChildren", NODE_VIEW)
+        self.assertIn("sub.hidden) continue", NODE_VIEW)
+        self.assertIn("- (void)updateVisible:(BOOL)visible", NODE_VIEW)
+        self.assertIn("[self.superview setNeedsLayout]", NODE_VIEW)
+        # 壳的 setVisible 命令必须走 updateVisible（触发重排），不得直接置 hidden
+        self.assertIn("[node updateVisible:[argument boolValue]]", SHELL_VC)
+
+    def test_multiplayer_routes_to_real_page(self):
+        # 问题 2：open:multiplayer 不再弹「不可用」，路由到真实联机页（FCL 风格房间列表）
+        self.assertIn('@"open:multiplayer": @"ShowMultiplayer"', ACTION_ROUTER)
+        self.assertIn("MultiplayerViewController", SHELL_VC)
+        self.assertIn("MultiplayerVCModeLauncher", SHELL_VC)
+        # 降级弹窗已删除（崩溃根因 NSCopying 已在 PR #5 修复）
+        self.assertNotIn("showMultiplayerDisabledAlert", ACTION_ROUTER)
+        self.assertNotIn("showMultiplayerDisabledAlert", SHELL_VC)
+
+    def test_more_page_exists_and_wires_secondary_entries(self):
+        # 问题 2：更多页聚合二级入口（资源管理/个性化/关于与日志），不再直接跳 Mod 管理
+        self.assertIn("open:more", ACTION_ROUTER)
+        self.assertIn("- (void)showMorePage", SHELL_VC)
+        self.assertIn("PLUIMoreViewController", SHELL_VC)
+        self.assertIn("PLUIMoreViewController.m", CMAKE)
+        self.assertTrue((NATIVES / "PLUIMoreViewController.h").exists())
+        more_vc = (NATIVES / "PLUIMoreViewController.m").read_text()
+        # 二级入口复用既有通知/VC：Mod/光影/整合包/世界管理 + 壁纸设置
+        for entry in ("ShowModsManager", "ShowShadersManager", "ShowModpackImport",
+                      "WorldsManagerViewController", "BackgroundSettingsViewController"):
+            self.assertIn(entry, more_vc)
+        # 关于与日志：版本信息 / 开源仓库 / 反馈 / 日志查看
+        self.assertIn("CFBundleShortVersionString", more_vc)
+        self.assertIn("github.com/twoyears666/A-pear", more_vc)
+        self.assertIn("logs/latest.log", more_vc)
+
+    def test_page_identifiers_cover_five_tabs(self):
+        # 五页签对应页面标识齐全（页签选中态/左栏收起跟随真实内容页）
+        for cls, page in (("LauncherNewsViewController", "home"),
+                          ("DownloadViewController", "download"),
+                          ("MultiplayerViewController", "multiplayer"),
+                          ("LauncherPreferencesViewController", "settings"),
+                          ("PLUIMoreViewController", "more")):
+            self.assertIn(f'@"{cls}": @"{page}"', SHELL_VC)
+
+    def test_background_changes_apply_to_content_pages_live(self):
+        # 问题 3：背景透明度/毛玻璃滑条实时生效 —— 效果变化通知同步重应用
+        # 到当前内容页（含导航栈），不必重进页面
+        self.assertIn("BackgroundUIEffectChanged", SHELL_VC)
+        self.assertIn("makeViewControllerTransparent", SHELL_VC)
+
+    def test_more_page_i18n_keys_exist(self):
+        # 更多页文案走 uipack.more.* 令牌（6 语言随 welcome 套件）
+        zh = (NATIVES / "resources/zh-Hans.lproj/Localizable.strings").read_text()
+        en = (NATIVES / "resources/en.lproj/Localizable.strings").read_text()
+        for key in ("uipack.more.title", "uipack.more.wallpaper", "uipack.more.logs"):
+            self.assertIn(f'"{key}"', zh)
+            self.assertIn(f'"{key}"', en)

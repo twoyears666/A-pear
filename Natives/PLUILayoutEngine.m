@@ -63,6 +63,7 @@ static void PLUIEnumerateNode(PLUINodeView *node, void (^block)(PLUINodeView *no
     return @{
         @"kind": @"row",
         @"id": @"shell",
+        @"spacing": @0,   // 根行不留缺省 8pt 透明缝（黑边根治，与 PCL2 包行为一致）
         @"children": @[
             @{
                 @"kind": @"column",
