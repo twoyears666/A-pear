@@ -403,6 +403,7 @@ add_executable(AngelAuraAmethyst
   PLUILayoutEngine.m
   PLUIActionRouter.m
   PLUIShellViewController.m
+  PLUIMoreViewController.m
   LauncherLaunchService.m
   LauncherPreferencesViewController.m
   LauncherPrefContCfgViewController.m

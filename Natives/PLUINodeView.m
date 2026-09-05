@@ -442,6 +442,17 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     NSArray<PLUINodeView *> *children = [self.subviews isKindOfClass:NSArray.class] ? (NSArray *)self.subviews : nil;
     if (children.count == 0) return;
 
+    // 隐藏节点坍缩（PCL2 行为：非启动页收起左栏，内容区全幅铺开）：
+    // hidden 子节点不参与主轴分配与 spacing 计数，其余子节点重新瓜分空间。
+    NSMutableArray<PLUINodeView *> *visibleChildren = nil;
+    for (UIView *sub in children) {
+        if (![sub isKindOfClass:PLUINodeView.class] || sub.hidden) continue;
+        if (!visibleChildren) visibleChildren = [NSMutableArray array];
+        [visibleChildren addObject:(PLUINodeView *)sub];
+    }
+    if (visibleChildren.count == 0) return;
+    children = visibleChildren;
+
     UIEdgeInsets pad = self.padding;
     CGFloat mainLen = horizontal ? self.bounds.size.width - pad.left - pad.right
                                  : self.bounds.size.height - pad.top - pad.bottom;
@@ -560,7 +571,7 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         CGFloat main = 0, cross = 0;
         NSUInteger count = 0;
         for (UIView *sub in self.subviews) {
-            if (![sub isKindOfClass:PLUINodeView.class]) continue;
+            if (![sub isKindOfClass:PLUINodeView.class] || sub.hidden) continue;
             PLUINodeView *child = (PLUINodeView *)sub;
             count++;
             // 权重子节点无法预知分配量，退化为固有尺寸作为估计值
@@ -623,6 +634,13 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
 - (void)updateEnabled:(BOOL)enabled {
     if (self.button) self.button.enabled = enabled;
+}
+
+- (void)updateVisible:(BOOL)visible {
+    self.hidden = !visible;
+    // 隐藏节点在栈布局中坍缩，需让父容器重排（其余子节点重新瓜分主轴空间）
+    [self.superview setNeedsLayout];
+    [self setNeedsLayout];
 }
 
 #pragma mark - 手势与样式（launcher.view(id):setStyle / 容器可点击）

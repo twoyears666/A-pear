@@ -20,6 +20,8 @@
 #import "ModpackImportViewController.h"
 #import "LauncherPrefGameDirViewController.h"
 #import "AccountListViewController.h"
+#import "MultiplayerViewController.h"
+#import "PLUIMoreViewController.h"
 #import "AI/AIViewController.h"
 #import "AI/AiSessionStore.h"
 #import "authenticator/BaseAuthenticator.h"
@@ -93,6 +95,7 @@
         }];
         [self wireActions];
         [self wireRuntime];
+        [self refreshShellBackdrop];
         [self showInitialPage];
         [self refreshStateAndNotifyReady];
     } @catch (NSException *exception) {
@@ -142,7 +145,8 @@
         } else if ([command isEqualToString:@"setImage"]) {
             [node updateImageSpec:[argument isKindOfClass:NSString.class] ? argument : nil];
         } else if ([command isEqualToString:@"setVisible"]) {
-            node.hidden = ![argument boolValue];
+            // updateVisible 会触发父容器重排：隐藏节点坍缩，其余子节点重新瓜分空间
+            [node updateVisible:[argument boolValue]];
         } else if ([command isEqualToString:@"setEnabled"]) {
             [node updateEnabled:[argument boolValue]];
         } else if ([command isEqualToString:@"setStyle"]) {
@@ -204,7 +208,8 @@
     on(@"ShowSettings", @selector(showSettings));
     on(@"ShowAIPage", @selector(showAIPage));
     on(@"ShowMultiplayer", @selector(showMultiplayer));
-    on(@"ShowZeroTier", @selector(showZeroTier));
+    on(@"ShowZeroTier", @selector(showMultiplayer));
+    on(@"ShowMorePage", @selector(showMorePage));
     on(@"ShowModsManager", @selector(showModsManager));
     on(@"ShowShadersManager", @selector(showShadersManager));
     on(@"ShowModpackImport", @selector(showModpackImport));
@@ -251,6 +256,8 @@
         @"VersionManagerViewController": @"open:versionManager",
         @"LauncherPreferencesViewController": @"open:settings",
         @"AIViewController": @"open:ai",
+        @"MultiplayerViewController": @"open:multiplayer",
+        @"PLUIMoreViewController": @"open:more",
         @"ModsManagerViewController": @"open:mods",
         @"ShadersManagerViewController": @"open:shaders",
         @"ModpackImportViewController": @"open:modpackImport",
@@ -318,11 +325,21 @@
 }
 
 - (void)showMultiplayer {
-    [PLUIActionRouter.sharedRouter performAction:@"open:multiplayer" fromViewController:self];
+    // 联机大厅（FCL 风格）：联机开关 + Network ID 预设 + 房间列表。
+    // 旧壳排查启动崩溃期间临时降级为"不可用"弹窗；崩溃根因（NSCopying，
+    // PR #5）已修复，恢复接入真实联机页。
+    MultiplayerViewController *vc = [[MultiplayerViewController alloc] initWithMode:MultiplayerVCModeLauncher];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.navigationBar.prefersLargeTitles = NO;
+    [self setContentViewController:nav animated:YES];
 }
 
-- (void)showZeroTier {
-    [PLUIActionRouter.sharedRouter performAction:@"open:zeroTier" fromViewController:self];
+- (void)showMorePage {
+    // PCL2「更多」页：聚合二级功能入口（资源管理 / 个性化 / 关于与日志）
+    PLUIMoreViewController *vc = [[PLUIMoreViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.navigationBar.prefersLargeTitles = NO;
+    [self setContentViewController:nav animated:YES];
 }
 
 - (void)showModsManager {
@@ -377,6 +394,20 @@
 
 - (void)backgroundChanged {
     [[BackgroundManager sharedManager] applyBackgroundToView:self.view];
+    // 壁纸设置/清除切换壳底色：有壁纸→透明透出窗口级壁纸；无壁纸→不透明主题底色
+    [self refreshShellBackdrop];
+}
+
+/// 壳底色（黑边根治）：makeViewControllerTransparent 把壳视图置透明后，
+/// Lua 树任何未覆盖/半透明区域都透出窗口底色 —— 而 general.ui_theme 默认
+/// dark，systemBackgroundColor=黑，形成"黑边/黑底"。
+/// 有壁纸：保持透明，让窗口最底层的壁纸容器透出（半透明包色叠加其上）；
+/// 无壁纸：铺不透明主题底色，半透明包色叠加其上呈现正常浅色观感。
+- (void)refreshShellBackdrop {
+    BackgroundManager *background = [BackgroundManager sharedManager];
+    self.view.backgroundColor = background.hasBackground
+        ? [UIColor clearColor]
+        : [PLThemeManager.sharedManager colorForToken:@"background" fallback:UIColor.systemBackgroundColor];
 }
 
 - (void)uiEffectChanged:(NSNotification *)notification {
@@ -384,6 +415,16 @@
     for (PLUINodeView *child in self.engine.rootView.subviews) {
         if ([child isKindOfClass:PLUINodeView.class]) {
             [[BackgroundManager sharedManager] applyEffectToView:child];
+        }
+    }
+    // 背景透明度/毛玻璃滑条实时生效：当前内容页同步重应用透明化
+    if (self.contentViewController) {
+        if ([self.contentViewController isKindOfClass:UINavigationController.class]) {
+            for (UIViewController *stackVC in ((UINavigationController *)self.contentViewController).viewControllers) {
+                [[BackgroundManager sharedManager] makeViewControllerTransparent:stackVC];
+            }
+        } else {
+            [[BackgroundManager sharedManager] makeViewControllerTransparent:self.contentViewController];
         }
     }
 }
@@ -473,6 +514,8 @@
         @"VersionManagerViewController": @"versionManager",
         @"LauncherPreferencesViewController": @"settings",
         @"AIViewController": @"ai",
+        @"MultiplayerViewController": @"multiplayer",
+        @"PLUIMoreViewController": @"more",
         @"ModsManagerViewController": @"mods",
         @"ShadersManagerViewController": @"shaders",
         @"ModpackImportViewController": @"modpackImport",

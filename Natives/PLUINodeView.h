@@ -59,6 +59,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 样式更新（launcher.view(id):setStyle 的落点）：
 /// background / tint / borderColor / borderWidth / corner（数字或 "pill"）。
 - (void)updateStyleSpec:(nullable NSDictionary *)spec;
+/// 显隐更新（launcher.view(id):setVisible 的落点）。
+/// 隐藏的子节点在栈布局中坍缩为零尺寸（不占主轴、不占 spacing），
+/// 并触发父容器重排 —— PCL2 非启动页收起左栏、内容区全幅铺开依赖此行为。
+- (void)updateVisible:(BOOL)visible;
 
 @end
 
