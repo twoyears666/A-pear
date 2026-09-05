@@ -78,11 +78,13 @@ static NSString * const kMultiplayerEnabledKey = @"multiplayer.enabled";
 /// MC 默认服务器端口
 static NSString * const kDefaultMCPort = @"25565";
 
-/// 分享文本中的各种前缀标记（用于生成和解析）
-static NSString * const kShareHeaderLine = localize(@"i18n_str_599", nil);
-static NSString * const kShareRoomNamePrefix = localize(@"i18n_str_600", nil);
-static NSString * const kShareNetworkIdPrefix = localize(@"i18n_str_601", nil);
-static NSString * const kShareServerAddressPrefix = localize(@"i18n_str_602", nil);
+// 分享文本中的各种前缀标记（用于生成和解析）。
+// i18n 后前缀需经 localize() 取本地化文案，而全局 static 初始化器必须是
+// 编译期常量，故在使用处内联调用（见 buildShareText）。
+//  - i18n_str_599：分享头行
+//  - i18n_str_600：房间名前缀
+//  - i18n_str_601：Network ID 前缀
+//  - i18n_str_602：服务器地址前缀
 
 /// SOCKS5 代理默认端口（与 SOCKS5Proxy.h 中的 SOCKS5ProxyDefaultPort 一致）
 static uint16_t const kMultiplayerDefaultSOCKS5Port = 1080;
@@ -1932,18 +1934,18 @@ typedef NS_ENUM(NSInteger, MultiplayerErrorCode) {
 
     NSMutableString *text = [NSMutableString string];
 
-    [text appendString:kShareHeaderLine];
+    [text appendString:localize(@"i18n_str_599", nil)];
     [text appendString:@"\n"];
 
-    [text appendString:kShareRoomNamePrefix];
+    [text appendString:localize(@"i18n_str_600", nil)];
     [text appendString:name];
     [text appendString:@"\n"];
 
-    [text appendString:kShareNetworkIdPrefix];
+    [text appendString:localize(@"i18n_str_601", nil)];
     [text appendString:networkId];
     [text appendString:@"\n"];
 
-    [text appendString:kShareServerAddressPrefix];
+    [text appendString:localize(@"i18n_str_602", nil)];
     [text appendString:serverAddress];
     [text appendString:@"\n"];
 
