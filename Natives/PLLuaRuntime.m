@@ -46,8 +46,10 @@ static int PLLuaPanic(lua_State *L) {
 @interface PLLuaRuntime ()
 @property (nonatomic, assign) lua_State *L;
 @property (nonatomic, assign) PLLuaAllocContext *alloc;
-@property (nonatomic, copy) NSString *packIdentifier;
+@property (nonatomic, copy, nullable) NSString *packIdentifier;
 @property (nonatomic, assign) NSTimeInterval deadline; // 0 = 无预算
+/// RPC 分发（launcher.call）：由壳注入表驱动处理器，覆盖下载/联机/设置等数据面。
+@property (nonatomic, copy, nullable) id (^callHandler)(NSString *name, id args);
 @end
 
 static PLLuaRuntime *PLLuaBridgeSelf(lua_State *L) {
@@ -196,6 +198,17 @@ static int PLLuaBridgeViewGetText(lua_State *L) {
     return 1;
 }
 
+/// launcher.call(name, args) → result：原生数据面 RPC（版本清单/下载/联机/设置读）。
+static int PLLuaBridgeCall(lua_State *L) {
+    const char *name = luaL_optstring(L, 1, NULL);
+    if (!name) { lua_pushnil(L); return 1; }
+    PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
+    id args = PLLuaToNSObject(L, 2);
+    id result = runtime.callHandler ? runtime.callHandler(@(name), args) : nil;
+    PLLuaPushObject(L, result);
+    return 1;
+}
+
 /// 指令计数钩子：只做截止时间检查，超时抛 Lua 错误（被 pcall 捕获，不崩宿主）。
 static void PLLuaTimeoutHook(lua_State *L, lua_Debug *ar) {
     PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
@@ -230,6 +243,10 @@ end\n\
 function launcher.action(name)\n\
   if type(name) == 'string' then __bridge.action(name) end\n\
 end\n\
+function launcher.call(name, args)\n\
+  if type(name) ~= 'string' then return nil end\n\
+  return __bridge.call(name, args)\n\
+end\n\
 function launcher.view(id)\n\
   if type(id) ~= 'string' then return nil end\n\
   local h = { _id = id }\n\
@@ -239,6 +256,7 @@ function launcher.view(id)\n\
   function h:setVisible(v) return __bridge.viewCmd(self._id, 'setVisible', v ~= false) end\n\
   function h:setEnabled(e) return __bridge.viewCmd(self._id, 'setEnabled', e ~= false) end\n\
   function h:setStyle(s) return __bridge.viewCmd(self._id, 'setStyle', s) end\n\
+  function h:fade(v) return __bridge.viewCmd(self._id, 'fade', v ~= false) end\n\
   function h:getText() return __bridge.viewGetText(self._id) end\n\
   return h\n\
 end\n\
@@ -280,7 +298,7 @@ end\n\
         lua_setglobal(_L, "__self");
 
         // __bridge 表：脚本触达原生的唯一入口（log/action/viewCmd/viewGetText）
-        lua_createtable(_L, 0, 4);
+        lua_createtable(_L, 0, 5);
         lua_pushcfunction(_L, PLLuaBridgeLog);
         lua_setfield(_L, -2, "log");
         lua_pushcfunction(_L, PLLuaBridgeAction);
@@ -289,6 +307,8 @@ end\n\
         lua_setfield(_L, -2, "viewCmd");
         lua_pushcfunction(_L, PLLuaBridgeViewGetText);
         lua_setfield(_L, -2, "viewGetText");
+        lua_pushcfunction(_L, PLLuaBridgeCall);
+        lua_setfield(_L, -2, "call");
         lua_setglobal(_L, "__bridge");
 
         if (![self runChunk:PLLuaPrelude name:@"prelude" error:error] ||

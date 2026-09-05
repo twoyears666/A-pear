@@ -64,6 +64,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 并触发父容器重排 —— PCL2 非启动页收起左栏、内容区全幅铺开依赖此行为。
 - (void)updateVisible:(BOOL)visible;
 
+/// 页面淡入淡出（alpha 过渡）；duration<=0 退化为 updateVisible:。
+/// 隐藏节点仍在栈布局中坍缩，页码切换复用隐藏坍缩 + 淡入淡出语义。
+- (void)fadeToVisible:(BOOL)visible duration:(NSTimeInterval)duration;
+
 @end
 
 NS_ASSUME_NONNULL_END
