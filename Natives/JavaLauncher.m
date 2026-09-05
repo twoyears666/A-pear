@@ -696,39 +696,44 @@ int launchJVM(NSString *accountId, id launchTarget, int width, int height, int m
     }
 
     // ============================================================================
-    // ZeroTier 联机 SOCKS5 代理注入 —— 暂时移除（排查启动崩溃）
+    // ZeroTier 联机 SOCKS5 代理注入 —— 已恢复
+    //（临时移除用于排查启动崩溃；根因 PLUIPack NSCopying 已修复，见 PR #5）
     // ============================================================================
-    // 原逻辑：检测 AMETHYST_SOCKS5_PROXY 环境变量，注入 -DsocksProxyHost/-DsocksProxyPort
-    // ZeroTier 暂时移除后，MultiplayerManager 不再设置该环境变量，此块代码注释掉
+    // 当用户在联机界面连接到 ZeroTier 房间后，MultiplayerManager 会启动一个本地
+    // SOCKS5 代理（127.0.0.1:port），并通过环境变量 AMETHYST_SOCKS5_PROXY 传递
+    // 代理地址。这里检测该环境变量，注入 JVM 的 SOCKS5 代理参数，使 Minecraft
+    // 的 TCP 流量经本地代理转发到 ZeroTier 虚拟网络（联机功能闭环的最后一环）。
+    // 环境变量不存在时（非联机场景）跳过，不影响正常网络访问。
     // ============================================================================
-    // const char *socks5ProxyEnv = getenv("AMETHYST_SOCKS5_PROXY");
-    // if (socks5ProxyEnv && socks5ProxyEnv[0] != '\0') {
-    //     NSString *proxyStr = [NSString stringWithUTF8String:socks5ProxyEnv];
-    //     NSRange colonRange = [proxyStr rangeOfString:@":"];
-    //     if (colonRange.location != NSNotFound && colonRange.location > 0 &&
-    //         colonRange.location + 1 < proxyStr.length) {
-    //         NSString *proxyHost = [proxyStr substringToIndex:colonRange.location];
-    //         NSString *proxyPortStr = [proxyStr substringFromIndex:colonRange.location + 1];
-    //         NSInteger portValue = [proxyPortStr integerValue];
-    //         if (portValue > 0 && portValue <= 65535) {
-    //             PUSH_MARGV_FORMAT(@"-DsocksProxyHost=%@", proxyHost);
-    //             PUSH_MARGV_FORMAT(@"-DsocksProxyPort=%@", proxyPortStr);
-    //             NSString *nonProxyHosts = @"localhost|127.*|[::1]|"
-    //                                       @"*.minecraft.net|*.mojang.com|"
-    //                                       @"*.microsoft.com|*.microsoftonline.com|"
-    //                                       @"*.xboxlive.com|*.modrinth.com|"
-    //                                       @"*.curseforge.com|*.githubusercontent.com|"
-    //                                       @"*.github.com|*.amazonaws.com|"
-    //                                       @"*.cloudfront.net|*.akamaihd.net|"
-    //                                       @"10.*|192.168.*|172.16.*|172.17.*|172.18.*|"
-    //                                       @"172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|"
-    //                                       @"172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|"
-    //                                       @"172.29.*|172.30.*|172.31.*";
-    //             PUSH_MARGV_FORMAT(@"-DsocksNonProxyHosts=%@", nonProxyHosts);
-    //             NSLog(@"[JavaLauncher] Injected ZeroTier SOCKS5 proxy: %@:%@", proxyHost, proxyPortStr);
-    //         }
-    //     }
-    // }
+    const char *socks5ProxyEnv = getenv("AMETHYST_SOCKS5_PROXY");
+    if (socks5ProxyEnv && socks5ProxyEnv[0] != '\0') {
+        NSString *proxyStr = [NSString stringWithUTF8String:socks5ProxyEnv];
+        NSRange colonRange = [proxyStr rangeOfString:@":"];
+        if (colonRange.location != NSNotFound && colonRange.location > 0 &&
+            colonRange.location + 1 < proxyStr.length) {
+            NSString *proxyHost = [proxyStr substringToIndex:colonRange.location];
+            NSString *proxyPortStr = [proxyStr substringFromIndex:colonRange.location + 1];
+            NSInteger portValue = [proxyPortStr integerValue];
+            if (portValue > 0 && portValue <= 65535) {
+                PUSH_MARGV_FORMAT(@"-DsocksProxyHost=%@", proxyHost);
+                PUSH_MARGV_FORMAT(@"-DsocksProxyPort=%@", proxyPortStr);
+                // 让登录/认证/皮肤/版本库/Mod 下载等官方与第三方服务绕过代理
+                NSString *nonProxyHosts = @"localhost|127.*|[::1]|"
+                                          @"*.minecraft.net|*.mojang.com|"
+                                          @"*.microsoft.com|*.microsoftonline.com|"
+                                          @"*.xboxlive.com|*.modrinth.com|"
+                                          @"*.curseforge.com|*.githubusercontent.com|"
+                                          @"*.github.com|*.amazonaws.com|"
+                                          @"*.cloudfront.net|*.akamaihd.net|"
+                                          @"10.*|192.168.*|172.16.*|172.17.*|172.18.*|"
+                                          @"172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|"
+                                          @"172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|"
+                                          @"172.29.*|172.30.*|172.31.*";
+                PUSH_MARGV_FORMAT(@"-DsocksNonProxyHosts=%@", nonProxyHosts);
+                NSLog(@"[JavaLauncher] Injected ZeroTier SOCKS5 proxy: %@:%@", proxyHost, proxyPortStr);
+            }
+        }
+    }
 
     // Preset OpenGL libname
     const char *glLibName = getenv("AMETHYST_RENDERER");

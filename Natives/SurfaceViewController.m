@@ -24,8 +24,8 @@
 #import "ios_uikit_bridge.h"
 #import "LanPortDetector.h"
 #import "BackgroundManager.h"
-// ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
-// #import "MultiplayerManager.h"
+// ZeroTier 联机（已恢复：临时移除排查的启动崩溃根因 NSCopying 已在 PR #5 修复）
+#import "MultiplayerManager.h"
 
 #include "glfw_keycodes.h"
 #include "utils.h"
@@ -2461,8 +2461,15 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
     }
 
     // LAN 端口检测器已改为手动输入模式，stopDetecting 已移除，无需调用。
-    // ZeroTier/Terracotta 联机暂时移除：原 stopAllMultiplayerServices 调用注释掉
-    // [[MultiplayerManager sharedManager] stopAllMultiplayerServices];
+    // 游戏退出（存档关闭/JVM 结束）时清理联机资源（SOCKS5 代理、端口转发、
+    // ZeroTier 网络、AMETHYST_SOCKS5_PROXY 环境变量），防止端口残留；
+    // dealloc 可能在异常路径触发，用 @try/@catch 防止二次崩溃。
+    @try {
+        [[MultiplayerManager sharedManager] stopAllMultiplayerServices];
+        NSLog(@"[SurfaceViewController] dealloc: Multiplayer resources cleaned up");
+    } @catch (NSException *e) {
+        NSLog(@"[SurfaceViewController] dealloc: Exception while cleaning up multiplayer resources: %@", e);
+    }
 
     //æ¸ç TouchController èµæº
     if (self.touchControllerTransportHandle >= 0) {
