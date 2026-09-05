@@ -22,6 +22,7 @@
 #import "AccountListViewController.h"
 #import "MultiplayerViewController.h"
 #import "PLUIMoreViewController.h"
+#import "MultiplayerManager.h"
 #import "AI/AIViewController.h"
 #import "AI/AiSessionStore.h"
 #import "authenticator/BaseAuthenticator.h"
@@ -112,14 +113,17 @@
 - (void)wireActions {
     __weak typeof(self) weakSelf = self;
     [self.engine enumerateNodes:^(PLUINodeView *node) {
-        if (!node.action) return;
-        // 容器型可点击节点（非按钮）由引擎挂轻点手势，按钮节点走 UIControl 事件
+        // 所有可点击节点都挂 tapHandler：带 action 的按钮/容器走原生命令，
+        // 不带 action 的控件（分段标签/主按钮等）仍派发 onClick 供 Lua 处理选中态，
+        // 否则这些控件点击无任何响应。
         [node attachTapGestureIfNeeded];
         node.tapHandler = ^(PLUINodeView *tapped) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
-            [PLUIActionRouter.sharedRouter performAction:tapped.action
-                                     fromViewController:strongSelf];
+            if (tapped.action.length > 0) {
+                [PLUIActionRouter.sharedRouter performAction:tapped.action
+                                         fromViewController:strongSelf];
+            }
             [strongSelf.runtime dispatchEvent:@"onClick" arguments:@[tapped.nodeId ?: @""]];
         };
     }];
@@ -147,6 +151,9 @@
         } else if ([command isEqualToString:@"setVisible"]) {
             // updateVisible 会触发父容器重排：隐藏节点坍缩，其余子节点重新瓜分空间
             [node updateVisible:[argument boolValue]];
+        } else if ([command isEqualToString:@"fade"]) {
+            // 页面淡入淡出切换（alpha 过渡；隐藏仍在栈布局中坍缩）
+            [node fadeToVisible:[argument boolValue] duration:0.18];
         } else if ([command isEqualToString:@"setEnabled"]) {
             [node updateEnabled:[argument boolValue]];
         } else if ([command isEqualToString:@"setStyle"]) {
@@ -158,6 +165,11 @@
     self.runtime.viewTextHandler = ^NSString *(NSString *viewId) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         return [strongSelf.engine viewForId:viewId].currentText;
+    };
+    // launcher.call RPC：数据面分发（版本清单/下载分类/联机房间/设置读写）
+    self.runtime.callHandler = ^id(NSString *name, id args) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        return [strongSelf handleLuaCall:name args:args];
     };
 }
 
@@ -189,9 +201,77 @@
     return @{
         @"account": username ? @{@"name": username} : [NSNull null],
         @"version": @{@"name": PLProfiles.current.selectedProfileName ?: @""},
+        @"profiles": [self profileStateList],
+        @"servers": [self serverStateList],
         @"darkMode": @(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark),
         @"locale": [NSLocale currentLocale].localeIdentifier ?: @"",
     };
+}
+
+/// 本地已安装的版本档案清单（{id,type}），供启动页版本展示 / 更多页版本行。
+- (NSArray<NSDictionary *> *)profileStateList {
+    NSMutableArray *list = [NSMutableArray array];
+    for (NSDictionary *v in self.localVersionList) {
+        if ([v isKindOfClass:NSDictionary.class] && [v[@"id"] isKindOfClass:NSString.class]) {
+            [list addObject:@{ @"id": v[@"id"], @"type": v[@"type"] ?: @"installed" }];
+        }
+    }
+    return list;
+}
+
+/// 已保存联机房间（{name,onwer,networkId,hostIP,mode}），供联机页列表展示。
+- (NSArray<NSDictionary *> *)serverStateList {
+    NSMutableArray *list = [NSMutableArray array];
+    MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+    for (MultiplayerRoom *room in mpm.savedRooms) {
+        if (![room isKindOfClass:MultiplayerRoom.class]) continue;
+        [list addObject:@{
+            @"name": room.name ?: @"",
+            @"owner": room.ownerName ?: @"",
+            @"networkId": room.networkId ?: @"",
+            @"hostIP": room.hostIP ?: @"",
+            @"hostPort": room.hostPort ?: @"",
+            @"mode": (room.role == MultiplayerRoomRoleHost) ? @"host" : @"guest",
+        }];
+    }
+    return list;
+}
+
+/// launcher.call 数据面 RPC（表驱动；未知调用返回 nil，绝不做动态 selector）。
+- (id)handleLuaCall:(NSString *)name args:(id)args {
+    if (![name isKindOfClass:NSString.class] || name.length == 0) return nil;
+
+    if ([name isEqualToString:@"versions"]) {
+        return [self profileStateList];
+    }
+    if ([name isEqualToString:@"servers"]) {
+        return [self serverStateList];
+    }
+    if ([name isEqualToString:@"selectedVersion"]) {
+        NSString *nameStr = PLProfiles.current.selectedProfileName ?: @"";
+        return nameStr.length > 0 ? @{@"name": nameStr} : [NSNull null];
+    }
+    if ([name isEqualToString:@"account"]) {
+        BaseAuthenticator *auth = BaseAuthenticator.current;
+        NSString *username = auth.authData[@"username"];
+        return username ? @{@"name": username} : [NSNull null];
+    }
+    if ([name isEqualToString:@"settings"]) {
+        // 约定：{key=..., value?=...} —— 有 value 则写并返回 YES，否则读返回当前值。
+        if ([args isKindOfClass:NSDictionary.class]) {
+            NSDictionary *d = (NSDictionary *)args;
+            NSString *key = [d[@"key"] isKindOfClass:NSString.class] ? d[@"key"] : nil;
+            if (key && key.length > 0) {
+                if (d[@"value"] && ![d[@"value"] isEqual:[NSNull null]]) {
+                    setPrefObject(key, d[@"value"]);
+                    return @YES;
+                }
+                id value = getPrefObject(key);
+                return value ?: [NSNull null];
+            }
+        }
+    }
+    return nil;
 }
 
 #pragma mark - 通知注册（与旧壳相同的 13 个 Show* + 状态源）
@@ -272,15 +352,11 @@
 #pragma mark - 内容区页面（实现搬迁自 LauncherRootViewController）
 
 - (void)showHomePage {
-    LauncherNewsViewController *newsVC = [[LauncherNewsViewController alloc] init];
-    [self setContentViewController:newsVC animated:YES];
+    [self showLuaPage:@"home"];
 }
 
 - (void)showDownloadPage {
-    DownloadViewController *downloadVC = [[DownloadViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:downloadVC];
-    nav.navigationBar.prefersLargeTitles = NO;
-    [self setContentViewController:nav animated:YES];
+    [self showLuaPage:@"download"];
 }
 
 - (void)showVersionManager {
@@ -310,10 +386,7 @@
 }
 
 - (void)showSettings {
-    LauncherPreferencesViewController *vc = [[LauncherPreferencesViewController alloc] init];
-    UINavigationController *navVC = [[UINavigationController alloc] initWithRootViewController:vc];
-    navVC.navigationBar.prefersLargeTitles = YES;
-    [self setContentViewController:navVC animated:YES];
+    [self showLuaPage:@"settings"];
 }
 
 - (void)showAIPage {
@@ -325,21 +398,90 @@
 }
 
 - (void)showMultiplayer {
-    // 联机大厅（FCL 风格）：联机开关 + Network ID 预设 + 房间列表。
-    // 旧壳排查启动崩溃期间临时降级为"不可用"弹窗；崩溃根因（NSCopying，
-    // PR #5）已修复，恢复接入真实联机页。
-    MultiplayerViewController *vc = [[MultiplayerViewController alloc] initWithMode:MultiplayerVCModeLauncher];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.navigationBar.prefersLargeTitles = NO;
-    [self setContentViewController:nav animated:YES];
+    [self showLuaPage:@"multi"];
 }
 
 - (void)showMorePage {
-    // PCL2「更多」页：聚合二级功能入口（资源管理 / 个性化 / 关于与日志）
-    PLUIMoreViewController *vc = [[PLUIMoreViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.navigationBar.prefersLargeTitles = NO;
-    [self setContentViewController:nav animated:YES];
+    [self showLuaPage:@"more"];
+}
+
+/// Lua 页 → 内容区对应子树的节点 id（内容区五棵纯 Lua 页面约定）。
++ (NSString *)luaPageNodeIdForPage:(NSString *)page {
+    NSDictionary *map = @{
+        @"home": @"pageHome", @"download": @"pageDownload", @"multi": @"pageMulti",
+        @"settings": @"pageSettings", @"more": @"pageMore",
+    };
+    return map[page];
+}
+
+/// 主内容页切换：优先切到内容区的纯 Lua 子树（隐藏坍缩 + 淡入淡出）。
+/// 若激活包未定义该 Lua 页（旧包/兜底树），回退旧行为——挂载原生功能 VC。
+- (void)showLuaPage:(NSString *)page {
+    if (![page isKindOfClass:NSString.class]) return;
+    if (!self.engine || !self.contentNode) return;
+
+    NSString *pageNodeId = [self.class luaPageNodeIdForPage:page];
+    PLUINodeView *target = pageNodeId ? [self.engine viewForId:pageNodeId] : nil;
+    if (!target) {
+        NSLog(@"[PLUIShell] no Lua subtree for page '%@'; falling back to native VC", page);
+        [self fallbackNativePage:page];
+        return;
+    }
+
+    // 撤下先前原生挂载的内容 VC（Mod/光影/设置编辑器等次级页），Lua 子树接管
+    [self removeNativeContentViewController];
+
+    NSArray<NSString *> *pageIds = @[@"pageHome", @"pageDownload", @"pageMulti",
+                                     @"pageSettings", @"pageMore"];
+    for (NSString *pid in pageIds) {
+        PLUINodeView *n = [self.engine viewForId:pid];
+        if (!n) continue;
+        BOOL visible = [pid isEqualToString:pageNodeId];
+        [n fadeToVisible:visible duration:0.18];
+    }
+    self.currentLuaPage = page;
+    [self.runtime dispatchEvent:@"onPageChange" arguments:@[page]];
+}
+
+/// 包未定义 Lua 页子树时的回退：沿用旧机制的固定 VC 挂载。
+- (void)fallbackNativePage:(NSString *)page {
+    if ([page isEqualToString:@"download"]) {
+        DownloadViewController *downloadVC = [[DownloadViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:downloadVC];
+        nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+    } else if ([page isEqualToString:@"settings"]) {
+        LauncherPreferencesViewController *vc = [[LauncherPreferencesViewController alloc] init];
+        UINavigationController *navVC = [[UINavigationController alloc] initWithRootViewController:vc];
+        navVC.navigationBar.prefersLargeTitles = YES;
+        [self setContentViewController:navVC animated:YES];
+    } else if ([page isEqualToString:@"multi"]) {
+        MultiplayerViewController *vc = [[MultiplayerViewController alloc] initWithMode:MultiplayerVCModeLauncher];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+    } else if ([page isEqualToString:@"more"]) {
+        PLUIMoreViewController *vc = [[PLUIMoreViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+    } else {
+        LauncherNewsViewController *newsVC = [[LauncherNewsViewController alloc] init];
+        [self setContentViewController:newsVC animated:YES];
+    }
+}
+
+/// 移除直接挂载在内容区上的原生功能 VC（若无则不做任何事）。
+- (void)removeNativeContentViewController {
+    if (!self.contentViewController) return;
+    UIViewController *vc = self.contentViewController;
+    if (vc.parentViewController == self && vc.view.superview == self.contentNode) {
+        [vc willMoveToParentViewController:nil];
+        [vc.view removeFromSuperview];
+        [vc removeFromParentViewController];
+    }
+    self.contentViewController = nil;
+    self.currentContentConstraints = nil;
 }
 
 - (void)showModsManager {

@@ -30,6 +30,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 动作回调。脚本只能触发白名单动作，安全校验在路由层完成。
 @property (nonatomic, nullable, copy) void (^actionHandler)(NSString *action);
 
+/// launcher.call(name, args) 数据面 RPC 回调：版本清单 / 下载分类 / 联机房间 / 设置读写。
+/// 返回 nil 表示无结果。
+@property (nonatomic, nullable, copy) id _Nullable (^callHandler)(NSString *name, id _Nullable args);
+
 /// 创建并加载包脚本。加载失败（语法错误/超预算）返回 nil 并填充 error。
 - (nullable instancetype)initWithPack:(PLUIPack *)pack
                          scriptSource:(NSString *)source

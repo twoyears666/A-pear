@@ -15,6 +15,8 @@ static NSDictionary<NSString *, NSString *> *PLUIActionNotificationMap(void) {
             @"open:ai": @"ShowAIPage",
             @"open:multiplayer": @"ShowMultiplayer",
             @"open:zeroTier": @"ShowMultiplayer",
+            @"open:joinRoom": @"ShowMultiplayer",
+            @"open:createRoom": @"ShowMultiplayer",
             @"open:more": @"ShowMorePage",
             @"open:mods": @"ShowModsManager",
             @"open:shaders": @"ShowShadersManager",
