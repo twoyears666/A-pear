@@ -48,8 +48,7 @@ static int PLLuaPanic(lua_State *L) {
 @property (nonatomic, assign) PLLuaAllocContext *alloc;
 @property (nonatomic, copy, nullable) NSString *packIdentifier;
 @property (nonatomic, assign) NSTimeInterval deadline; // 0 = 无预算
-/// RPC 分发（launcher.call）：由壳注入表驱动处理器，覆盖下载/联机/设置等数据面。
-@property (nonatomic, copy, nullable) id (^callHandler)(NSString *name, id args);
+// callHandler 已提升到公开头文件（launcher.call RPC，由壳注入）。
 @end
 
 static PLLuaRuntime *PLLuaBridgeSelf(lua_State *L) {
