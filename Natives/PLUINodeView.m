@@ -117,6 +117,38 @@ static UIEdgeInsets PLUIResolvePadding(id value) {
     return UIEdgeInsetsZero;
 }
 
+/// 单边 padding：px 数值 px、vh 字符串返回倍数（px 记 -1 表示占位）。
+typedef struct { CGFloat px; CGFloat vh; } PLEdgeSpec;
+static PLEdgeSpec PLUIResolveEdgeSpec(id v) {
+    PLEdgeSpec e = { .px = -1, .vh = 0 };
+    if ([v isKindOfClass:NSNumber.class]) {
+        e.px = [v doubleValue];
+    } else if ([v isKindOfClass:NSString.class]) {
+        CGFloat f = PLUIResolveVHFactor(v);
+        if (f > 0) e.vh = f;
+        else e.px = [v doubleValue];
+    }
+    return e;
+}
+
+/// padding 扩展解析：每边可为 px 数值或 "x.xvh" 字符串（相对窗口高 H 比例）。
+/// 输出两组边距：px（固定像素边）、vh（窗口高倍数边）；调用方在布局时用
+/// 当前窗口高把 vh 边换算成像素后叠加，保证内边距随窗口等比缩放。
+static void PLUIResolvePaddingPair(id value, UIEdgeInsets *px, UIEdgeInsets *vh) {
+    *px = UIEdgeInsetsZero;
+    *vh = UIEdgeInsetsZero;
+    if ([value isKindOfClass:NSNumber.class]) {
+        CGFloat inset = [value doubleValue];
+        *px = UIEdgeInsetsMake(inset, inset, inset, inset);
+    } else if ([value isKindOfClass:NSDictionary.class]) {
+        PLEdgeSpec e;
+        e = PLUIResolveEdgeSpec(value[@"top"]);    (*px).top    = (e.vh > 0) ? 0 : e.px;    (*vh).top    = e.vh;
+        e = PLUIResolveEdgeSpec(value[@"left"]);   (*px).left   = (e.vh > 0) ? 0 : e.px;    (*vh).left   = e.vh;
+        e = PLUIResolveEdgeSpec(value[@"bottom"]); (*px).bottom = (e.vh > 0) ? 0 : e.px;    (*vh).bottom = e.vh;
+        e = PLUIResolveEdgeSpec(value[@"right"]);  (*px).right  = (e.vh > 0) ? 0 : e.px;    (*vh).right  = e.vh;
+    }
+}
+
 /// 主轴分布（justify）：默认 start，非权重内容块整体居中/尾部对齐。
 typedef NS_ENUM(uint8_t, PLUIJustify) {
     PLUIJustifyStart = 0,
@@ -186,6 +218,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 @property (nonatomic, assign) CGFloat spacing;
 @property (nonatomic, assign) CGFloat spacingVH;   // "6vh"（相对 H）层面的间距，0 = 用 spacing
 @property (nonatomic, assign) UIEdgeInsets padding;
+    // padding 的 vh 边（相对窗口高 H 倍数），布局时用当前窗口高换算成像素叠加到 padding。
+    @property (nonatomic, assign) UIEdgeInsets paddingVH;
 @property (nonatomic, assign) CGFloat fixedWidth;
 @property (nonatomic, assign) CGFloat fixedHeight;
 @property (nonatomic, assign) CGFloat widthPercent;   // "85%" 相对父容器主/交叉轴
@@ -213,6 +247,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 // hover 提亮：按下前的基础底色，用于松手后还原
 @property (nonatomic, strong, nullable) UIColor *highlightBaseBackground;
 @property (nonatomic, strong, nullable) UIColor *highlightBaseButtonBackground;
+// hover 指定底色（浅色主题 hover 变浅蓝 #EAF3FC）；nil = 退回明度 +5% 提亮
+@property (nonatomic, strong, nullable) UIColor *highlightColor;
 @end
 
 @implementation PLUINodeView
@@ -253,7 +289,7 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _spacing = [node[@"spacing"] isKindOfClass:NSNumber.class] ? [node[@"spacing"] doubleValue] : 8;
     // "6vh" 层面的间距（相对窗口高 H）：解析到倍数，布局时结合窗口高换算像素
     _spacingVH = PLUIResolveVHFactor(node[@"spacing"]);
-    _padding = PLUIResolvePadding(node[@"padding"]);
+    PLUIResolvePaddingPair(node[@"padding"], &_padding, &_paddingVH);
     // vh 尺寸（"4.5vh" 相对窗口高）：优先于固定值/百分比，布局时解析成像素
     _widthVH = PLUIResolveVHFactor(node[@"width"]);
     _heightVH = PLUIResolveVHFactor(node[@"height"]);
@@ -264,6 +300,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _heightPercent = (isnan(_fixedHeight) && _heightVH <= 0) ? PLUIResolvePercent(node[@"height"]) : 0;
     _highlightEnabled = [node[@"highlight"] isKindOfClass:NSNumber.class]
         ? [node[@"highlight"] boolValue] : YES;
+    // hover 指定底色：hoverColor（浅色主题整行条目 hover → 浅蓝 #EAF3FC）
+    _highlightColor = PLUIResolveColor(node[@"hoverColor"], nil);
     _justify = PLUIResolveJustify(node[@"justify"]);
     _crossAlign = PLUIResolveCrossAlign(node[@"crossAlign"]);
     _initialPage = [node[@"initialPage"] isKindOfClass:NSString.class] ? node[@"initialPage"] : nil;
@@ -296,6 +334,18 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
             self.layer.borderWidth = bw;
             self.layer.borderColor = PLUIResolveColor(border[@"color"], UIColor.separatorColor).CGColor;
         }
+    }
+
+    // 投影：shadow = { blur, opacity, x, y }（浅色主题白底卡片的极浅投影）。
+    // 卡片自身带 white 背景 + 圆角，投影由同一个 layer 绘制，故必须 masksToBounds=NO。
+    if ([node[@"shadow"] isKindOfClass:NSDictionary.class]) {
+        NSDictionary *sh = node[@"shadow"];
+        self.layer.shadowColor = [UIColor blackColor].CGColor;
+        self.layer.shadowOpacity = [sh[@"opacity"] isKindOfClass:NSNumber.class] ? [sh[@"opacity"] floatValue] : 0.06f;
+        self.layer.shadowRadius  = [sh[@"blur"] isKindOfClass:NSNumber.class] ? [sh[@"blur"] doubleValue] : 4.0;
+        self.layer.shadowOffset  = CGSizeMake([sh[@"x"] isKindOfClass:NSNumber.class] ? [sh[@"x"] doubleValue] : 0,
+                                              [sh[@"y"] isKindOfClass:NSNumber.class] ? [sh[@"y"] doubleValue] : 1.0);
+        self.layer.masksToBounds = NO;
     }
 
     // 尺寸：size = 正方形边长（支持 vh）
@@ -416,10 +466,17 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         [_button setImage:icon forState:UIControlStateNormal];
     }
     _button.backgroundColor = PLUIResolveColor(style[@"background"], _button.backgroundColor);
-    // 药丸页签等图文按钮的水平内边距（节点 padding 映射到按钮 contentEdgeInsets）
-    UIEdgeInsets btnPad = PLUIResolvePadding(node[@"padding"]);
-    if (!UIEdgeInsetsEqualToEdgeInsets(btnPad, UIEdgeInsetsZero)) {
-        _button.contentEdgeInsets = btnPad;
+    // 药丸页签等图文按钮的水平内边距（节点 padding 映射到按钮 contentEdgeInsets，
+    // px/vh 分别解析，vh 以屏幕高兜底换算——按钮内边距随窗口高缩放）
+    {
+        UIEdgeInsets ppx = UIEdgeInsetsZero, pvh = UIEdgeInsetsZero;
+        PLUIResolvePaddingPair(node[@"padding"], &ppx, &pvh);
+        CGFloat bh = CGRectGetHeight(UIScreen.mainScreen.bounds);
+        UIEdgeInsets btnPad = UIEdgeInsetsMake(ppx.top + pvh.top * bh, ppx.left + pvh.left * bh,
+                                               ppx.bottom + pvh.bottom * bh, ppx.right + pvh.right * bh);
+        if (!UIEdgeInsetsEqualToEdgeInsets(btnPad, UIEdgeInsetsZero)) {
+            _button.contentEdgeInsets = btnPad;
+        }
     }
     // vh 字号：存倍数，布局时结合窗口高重建字体
     [self applyFontNode:node style:style toLabel:_button.titleLabel];
@@ -481,8 +538,9 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
 - (void)buttonHighlightOn:(UIButton *)button {
     if (!self.highlightBaseButtonBackground) self.highlightBaseButtonBackground = button.backgroundColor;
-    UIColor *brighter = PLUIAdjustBrightness(self.highlightBaseButtonBackground, 0.05);
-    if (brighter) button.backgroundColor = brighter;
+    // 指定 hover 底色优先（如浅色条目 hover → 浅蓝），否则退回明度 +5% 提亮
+    UIColor *target = self.highlightColor ?: PLUIAdjustBrightness(self.highlightBaseButtonBackground, 0.05);
+    if (target) button.backgroundColor = target;
 }
 
 - (void)buttonHighlightOff:(UIButton *)button {
@@ -582,7 +640,11 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     if (visibleChildren.count == 0) return;
     children = visibleChildren;
 
-    UIEdgeInsets pad = self.padding;
+    CGFloat H0 = [self windowHeight];
+    UIEdgeInsets pad = UIEdgeInsetsMake(self.padding.top + self.paddingVH.top * H0,
+                                        self.padding.left + self.paddingVH.left * H0,
+                                        self.padding.bottom + self.paddingVH.bottom * H0,
+                                        self.padding.right + self.paddingVH.right * H0);
     CGFloat mainLen = horizontal ? self.bounds.size.width - pad.left - pad.right
                                  : self.bounds.size.height - pad.top - pad.bottom;
     CGFloat crossLen = horizontal ? self.bounds.size.height - pad.top - pad.bottom
@@ -590,7 +652,6 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     if (mainLen <= 0 || crossLen <= 0) return;
 
     NSUInteger n = children.count;
-    CGFloat H0 = [self windowHeight];
     CGFloat spacing = self.spacingVH > 0 ? self.spacingVH * H0 : self.spacing;
     CGFloat spacingTotal = spacing * (CGFloat)(n - 1);
     CGFloat fixedTotal = 0;
@@ -711,7 +772,11 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     // 此前容器返回 CGSizeZero，嵌套 row/column 在列/行里高度/宽度塌为 0。
     if (self.horizontalStack || self.verticalStack) {
         BOOL horizontal = self.horizontalStack;
-        UIEdgeInsets pad = self.padding;
+        CGFloat hv = [self windowHeight];
+        UIEdgeInsets pad = UIEdgeInsetsMake(self.padding.top + self.paddingVH.top * hv,
+                                            self.padding.left + self.paddingVH.left * hv,
+                                            self.padding.bottom + self.paddingVH.bottom * hv,
+                                            self.padding.right + self.paddingVH.right * hv);
         CGFloat main = 0, cross = 0;
         NSUInteger count = 0;
         for (UIView *sub in self.subviews) {
@@ -875,8 +940,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     [super touchesBegan:touches withEvent:event];
     if (self.highlightEnabled && self.action.length > 0 && !self.button) {
         if (!self.highlightBaseBackground) self.highlightBaseBackground = self.backgroundColor;
-        UIColor *brighter = PLUIAdjustBrightness(self.highlightBaseBackground, 0.05);
-        if (brighter) self.backgroundColor = brighter;
+        UIColor *target = self.highlightColor ?: PLUIAdjustBrightness(self.highlightBaseBackground, 0.05);
+        if (target) self.backgroundColor = target;
     }
 }
 
