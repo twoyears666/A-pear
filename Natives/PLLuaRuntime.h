@@ -27,8 +27,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, nullable, copy) BOOL (^viewCommandHandler)(NSString *viewId, NSString *command, id argument);
 /// view 读取回调（getText）。view 不存在返回 nil。
 @property (nonatomic, nullable, copy) NSString *_Nullable (^viewTextHandler)(NSString *viewId);
+/// view 读取回调（getFrame）。view 不存在返回 nil。
+@property (nonatomic, nullable, copy) NSDictionary *_Nullable (^viewFrameHandler)(NSString *viewId);
 /// 动作回调。脚本只能触发白名单动作，安全校验在路由层完成。
 @property (nonatomic, nullable, copy) void (^actionHandler)(NSString *action);
+/// 服务回调（launcher.service）。启动器注册同步只读/写服务；返回结果会被序列化为 Lua 表。
+/// service/method 为空或返回 nil 时 Lua 拿到空表。
+@property (nonatomic, nullable, copy) NSDictionary *_Nullable (^serviceHandler)(NSString *service, NSString *method, NSDictionary *_Nullable args);
+/// 事件回调（launcher.emit）。供 UI 包把交互/数据变化广播给宿主。
+@property (nonatomic, nullable, copy) void (^emitHandler)(NSString *event, id _Nullable payload);
+/// 状态拉取回调（launcher.getState）。返回当前完整状态快照（等同 setState 内容）。
+@property (nonatomic, nullable, copy) NSDictionary *_Nullable (^stateHandler)(void);
 
 /// 创建并加载包脚本。加载失败（语法错误/超预算）返回 nil 并填充 error。
 - (nullable instancetype)initWithPack:(PLUIPack *)pack

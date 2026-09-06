@@ -166,6 +166,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *tapGesture;
 @property (nonatomic, assign) UIRectEdge outerEdges;
 @property (nonatomic, copy) NSString *initialPage;
+@property (nonatomic, assign) BOOL absolute;         // absolute=true：绝对定位覆盖层
+@property (nonatomic, copy) NSDictionary *pageAliases; // content：page token → Lua 页子树 id
 @property (nonatomic, strong) UILabel *textLabel;
 @property (nonatomic, strong) UIButton *button;
 @property (nonatomic, strong) UIImageView *contentImageView;
@@ -211,6 +213,9 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _justify = PLUIResolveJustify(node[@"justify"]);
     _crossAlign = PLUIResolveCrossAlign(node[@"crossAlign"]);
     _initialPage = [node[@"initialPage"] isKindOfClass:NSString.class] ? node[@"initialPage"] : nil;
+    // absolute=true：绝对定位覆盖层（如顶栏页签滑动白色高亮游标），
+    // 不参与父容器栈布局，用 setFrame 显式定位。
+    _absolute = [node[@"absolute"] isKindOfClass:NSNumber.class] ? [node[@"absolute"] boolValue] : NO;
 
     // 背景：字符串=纯色；字典 {from,to,angle}=线性渐变（PCL2 内容区对角渐变）
     if ([node[@"background"] isKindOfClass:NSDictionary.class]) {
@@ -265,8 +270,15 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         _spacing = [node[@"spacing"] isKindOfClass:NSNumber.class] ? [node[@"spacing"] doubleValue] : 12;
         [self applyNavItems:node compact:compact dark:dark];
     } else if ([kind isEqualToString:@"content"]) {
+        // 完全数据驱动：content 节点真实渲染其 children（每棵 = 纯 Lua 页子树），
+        // 由 showLuaPage:animated: 负责页间切换（淡入淡出），不再仅作原生 VC 占位。
         _contentArea = YES;
         if (_weight <= 0) _weight = 1; // 内容区默认伸展
+        // 页面别名表（UI 包配置）：page token → Lua 页子树 id。引擎不写死任何页面名。
+        if ([node[@"pages"] isKindOfClass:NSDictionary.class]) {
+            _pageAliases = node[@"pages"];
+        }
+        [self applyChildren:node[@"children"] compact:compact dark:dark];
     } else if ([kind isEqualToString:@"button"]) {
         [self buildButton:node];
     } else if ([kind isEqualToString:@"text"]) {
@@ -436,6 +448,30 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     // UIButton 自身负责图文内容居中。此前按 min(宽,高) 居中裁切文字按钮。
     if (self.button) self.button.frame = self.bounds;
 
+    // absolute 覆盖层默认铺满父内区（次级页全屏 / 顶栏游标初始位置），
+    // 之后可由 launcher.view(id):setFrame 显式重新定位（frame 非空则不再覆盖）。
+    for (UIView *sub in self.subviews) {
+        if (![sub isKindOfClass:PLUINodeView.class]) continue;
+        PLUINodeView *pv = (PLUINodeView *)sub;
+        if (!pv.absolute || !CGRectIsEmpty(pv.frame)) continue;
+        pv.frame = CGRectMake(self.padding.left, self.padding.top,
+                              self.bounds.size.width - self.padding.left - self.padding.right,
+                              self.bounds.size.height - self.padding.top - self.padding.bottom);
+    }
+
+    // content 内容区：渲染其 children（纯 Lua 页子树）——每棵铺满内区并覆盖叠加，
+    // 可见性由 showLuaPage:animated: 控制。不走下方栈布局（content 非 row/column）。
+    if (_contentArea) {
+        CGFloat innerW = self.bounds.size.width - self.padding.left - self.padding.right;
+        CGFloat innerH = self.bounds.size.height - self.padding.top - self.padding.bottom;
+        if (innerW <= 0 || innerH <= 0) return;
+        for (UIView *sub in self.subviews) {
+            if (![sub isKindOfClass:PLUINodeView.class]) continue;
+            ((PLUINodeView *)sub).frame = CGRectMake(self.padding.left, self.padding.top, innerW, innerH);
+        }
+        return;
+    }
+
     if (!self.horizontalStack && !self.verticalStack) return;
     BOOL horizontal = self.horizontalStack;
 
@@ -444,11 +480,14 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
     // 隐藏节点坍缩（PCL2 行为：非启动页收起左栏，内容区全幅铺开）：
     // hidden 子节点不参与主轴分配与 spacing 计数，其余子节点重新瓜分空间。
+    // absolute 覆盖层（如顶栏药丸游标）同样不参与栈布局。
     NSMutableArray<PLUINodeView *> *visibleChildren = nil;
     for (UIView *sub in children) {
         if (![sub isKindOfClass:PLUINodeView.class] || sub.hidden) continue;
+        PLUINodeView *pv = (PLUINodeView *)sub;
+        if (pv.absolute) continue;
         if (!visibleChildren) visibleChildren = [NSMutableArray array];
-        [visibleChildren addObject:(PLUINodeView *)sub];
+        [visibleChildren addObject:pv];
     }
     if (visibleChildren.count == 0) return;
     children = visibleChildren;
@@ -573,6 +612,7 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         for (UIView *sub in self.subviews) {
             if (![sub isKindOfClass:PLUINodeView.class] || sub.hidden) continue;
             PLUINodeView *child = (PLUINodeView *)sub;
+            if (child.absolute) continue; // 绝对定位覆盖层不参与内容测量
             count++;
             // 权重子节点无法预知分配量，退化为固有尺寸作为估计值
             CGSize intrinsic = [child sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
@@ -643,6 +683,87 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     [self setNeedsLayout];
 }
 
+#pragma mark - content 内容区页切换（完全数据驱动）
+
+/// 页面 token → Lua 页子树 id 解析（pageAliase 未命中则视为子树 id 本身）。
+- (NSString *)pageIdForToken:(NSString *)token {
+    if (self.pageAliases && [self.pageAliases isKindOfClass:NSDictionary.class]) {
+        id pid = self.pageAliases[token];
+        if ([pid isKindOfClass:NSString.class] && [(NSString *)pid length] > 0) return pid;
+    }
+    return token;
+}
+
+/// content 节点的直接 Lua 页子树列表（children 的 PLUINodeView）。
+- (NSArray<PLUINodeView *> *)contentPages {
+    NSMutableArray<PLUINodeView *> *pages = [NSMutableArray array];
+    for (UIView *sub in self.subviews) {
+        if ([sub isKindOfClass:PLUINodeView.class]) [pages addObject:(PLUINodeView *)sub];
+    }
+    return pages;
+}
+
+/// 切换到指定 Lua 页子树，其余页隐藏（淡入淡出）。
+- (void)showLuaPage:(NSString *)pageId animated:(BOOL)animated {
+    PLUINodeView *target = nil;
+    for (UIView *sub in self.subviews) {
+        if (![sub isKindOfClass:PLUINodeView.class]) continue;
+        PLUINodeView *page = (PLUINodeView *)sub;
+        if (page.nodeId && [page.nodeId isEqualToString:pageId]) { target = page; break; }
+    }
+    if (!target) return;
+    UIView *targetView = target;
+    void (^apply)(void) = ^{
+        for (UIView *sub in self.subviews) {
+            if (![sub isKindOfClass:PLUINodeView.class]) continue;
+            sub.hidden = (sub != targetView);
+        }
+    };
+    if (!animated) {
+        apply();
+        return;
+    }
+    [UIView transitionWithView:self duration:0.25
+                       options:UIViewAnimationOptionTransitionCrossDissolve
+                    animations:apply completion:nil];
+}
+
+/// 当前显示的 Lua 页子树 id（未隐藏的那棵）。
+- (NSString *)currentContentPage {
+    for (UIView *sub in self.subviews) {
+        if ([sub isKindOfClass:PLUINodeView.class] && !sub.hidden) {
+            NSString *pid = ((PLUINodeView *)sub).nodeId;
+            if (pid) return pid;
+        }
+    }
+    return nil;
+}
+
+#pragma mark - 绝对定位（launcher.view(id):setFrame / getFrame 落点，用于游标平滑滑动）
+
+- (void)updateFrameRect:(NSDictionary *)rect animated:(BOOL)animated {
+    if (![rect isKindOfClass:NSDictionary.class]) return;
+    CGFloat w = [rect[@"w"] isKindOfClass:NSNumber.class] ? [rect[@"w"] doubleValue]
+              : ([rect[@"width"] isKindOfClass:NSNumber.class] ? [rect[@"width"] doubleValue] : self.bounds.size.width);
+    CGFloat h = [rect[@"h"] isKindOfClass:NSNumber.class] ? [rect[@"h"] doubleValue]
+              : ([rect[@"height"] isKindOfClass:NSNumber.class] ? [rect[@"height"] doubleValue] : self.bounds.size.height);
+    CGRect to = CGRectMake(
+        [rect[@"x"] isKindOfClass:NSNumber.class] ? [rect[@"x"] doubleValue] : self.frame.origin.x,
+        [rect[@"y"] isKindOfClass:NSNumber.class] ? [rect[@"y"] doubleValue] : self.frame.origin.y,
+        w, h);
+    if (!animated) {
+        self.frame = to;
+        return;
+    }
+    [UIView animateWithDuration:0.22 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{ self.frame = to; } completion:nil];
+}
+
+- (NSDictionary *)currentFrameRect {
+    return @{ @"x": @(self.frame.origin.x), @"y": @(self.frame.origin.y),
+              @"w": @(self.frame.size.width), @"h": @(self.frame.size.height) };
+}
+
 #pragma mark - 手势与样式（launcher.view(id):setStyle / 容器可点击）
 
 - (BOOL)hasButtonControl {
@@ -676,7 +797,11 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     if ([tint isKindOfClass:NSString.class]) {
         UIColor *color = PLUIResolveColor(tint, nil);
         if (color) {
-            if (self.button) [self.button setTitleColor:color forState:UIControlStateNormal];
+            if (self.button) {
+                [self.button setTitleColor:color forState:UIControlStateNormal];
+                UIImage *img = [self.button imageForState:UIControlStateNormal];
+                if (img) [self.button setImage:[img imageWithTintColor:color] forState:UIControlStateNormal];
+            }
             if (self.textLabel) self.textLabel.textColor = color;
         }
     }

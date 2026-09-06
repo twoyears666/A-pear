@@ -37,6 +37,8 @@
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
 /// 当前内容页标识（home/download/settings/...），变化时向 Lua 包派发 onPageChange
 @property (nonatomic, copy, nullable) NSString *currentLuaPage;
+/// 首个布局完成是否已向 Lua 派发 onLayout（游标等依赖真实 frame 的定位需在布局后执行）。
+@property (nonatomic, assign) BOOL didDispatchOnLayout;
 @end
 
 @implementation PLUIShellViewController
@@ -51,6 +53,16 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// 首个真实布局完成后通知 Lua（onLayout）：游标等依赖实际 frame 的定位需在布局后执行，
+// onReady 在 buildShell 期间已派发，彼时 frame 尚未就绪，故在此补发一次。
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (self.didDispatchOnLayout) return;
+    if (!self.runtime) return;
+    self.didDispatchOnLayout = YES;
+    [self.runtime dispatchEvent:@"onLayout" arguments:@[]];
 }
 
 #pragma mark - 材质包加载与渲染
@@ -78,6 +90,9 @@
             NSError *error = nil;
             PLLuaRuntime *runtime = [[PLLuaRuntime alloc] initWithPack:pack scriptSource:source error:&error];
             if (runtime) {
+                // 首块状态在 buildTree 前注入：让 build() 能读取 launcher.state.settings
+                // 等数据驱动清单，动态生成设置页条目（启动器新增条目无需改 UI 包）。
+                [runtime setState:@{ @"settings": [self launcherSettingsList] }];
                 tree = [runtime buildTreeWithError:&error];
                 if (tree) self.runtime = runtime;
             }
@@ -152,29 +167,157 @@
         } else if ([command isEqualToString:@"setStyle"]) {
             // 样式热更新（PCL2 顶栏页签选中态药丸）：background/tint/border/corner
             [node updateStyleSpec:[argument isKindOfClass:NSDictionary.class] ? argument : nil];
+        } else if ([command isEqualToString:@"setFrame"]) {
+            // 绝对定位覆盖层（页签滑动高亮游标）：argument = { rect, animated }
+            NSDictionary *payload = (NSDictionary *)argument;
+            NSDictionary *rect = payload[@"rect"];
+            BOOL animated = [payload[@"animated"] boolValue];
+            if ([rect isKindOfClass:NSDictionary.class]) {
+                [node updateFrameRect:rect animated:animated];
+            }
         }
         return YES;
+    };
+    self.runtime.viewFrameHandler = ^NSDictionary *(NSString *viewId) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        PLUINodeView *node = [strongSelf.engine viewForId:viewId];
+        return node ? [node currentFrameRect] : nil;
     };
     self.runtime.viewTextHandler = ^NSString *(NSString *viewId) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         return [strongSelf.engine viewForId:viewId].currentText;
     };
+    // launcher.service：由宿主统一分发到各服务（settings/version/account/system/download）。
+    self.runtime.serviceHandler = ^NSDictionary *(NSString *service, NSString *method, NSDictionary *args) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        return [strongSelf handleLuaService:service method:method args:args];
+    };
+    // launcher.emit：广播给宿主，供其他监听方（壳/游戏窗口等）响应。
+    self.runtime.emitHandler = ^(NSString *event, id payload) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"PLUIServiceEmit"
+                          object:event
+                        userInfo:(payload ? @{@"payload": payload} : nil)];
+    };
+    // launcher.getState：拉取当前完整状态快照。
+    self.runtime.stateHandler = ^NSDictionary *(void) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        return [strongSelf currentState];
+    };
+}
+
+#pragma mark - WS-B 服务分发（launcher.service 落点，宿主拥有数据/能力）
+
+- (NSDictionary *)handleLuaService:(NSString *)service
+                            method:(NSString *)method
+                              args:(NSDictionary *)args {
+    // 未知服务/方法：返回 ok=NO（干净降级，不抛 Lua 错误）。
+    if ([service isEqualToString:@"settings"] && [method isEqualToString:@"list"]) {
+        return @{ @"ok": @YES, @"count": @([self launcherSettingsList].count),
+                  @"items": [self launcherSettingsList] };
+    }
+    if ([service isEqualToString:@"version"] && [method isEqualToString:@"current"]) {
+        return @{ @"ok": @YES, @"name": PLProfiles.current.selectedProfileName ?: @"" };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"current"]) {
+        BaseAuthenticator *auth = BaseAuthenticator.current;
+        NSString *name = auth.authData[@"username"];
+        return name ? @{ @"ok": @YES, @"name": name } : @{ @"ok": @NO };
+    }
+    if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
+        // 仅描述结构：动态值由设备/运行时填充，不写死。
+        return @{ @"ok": @YES,
+                  @"os": [UIDevice currentDevice].systemName ?: @"",
+                  @"systemVersion": [UIDevice currentDevice].systemVersion ?: @"",
+                  @"model": [UIDevice currentDevice].model ?: @"" };
+    }
+    if ([service isEqualToString:@"storage"] && [method isEqualToString:@"summary"]) {
+        return @{ @"ok": @YES, @"summary": @"" };
+    }
+    // 下载进度等异步服务：返回占位结构，真实实现由服务类异步回调后 emit 刷新。
+    if ([service isEqualToString:@"download"] && [method isEqualToString:@"summary"]) {
+        return @{ @"ok": @YES, @"activity": @0, @"downloaded": @0, @"total": @0 };
+    }
+    NSLog(@"[PLUIShell] unknown lua service %@.%@", service, method);
+    return @{ @"ok": @NO };
 }
 
 - (void)showInitialPage {
     if (!self.contentNode) return;
-    NSString *page = self.contentNode.initialPage;
-    if ([page isEqualToString:@"download"]) {
+    // 完全数据驱动：content 节点渲染 Lua 页子树，页 token 由 UI 包配置（pages 表）解析。
+    NSString *token = self.contentNode.initialPage ?: @"home";
+    NSString *pageId = [self.contentNode pageIdForToken:token];
+    BOOL hasLuaPage = NO;
+    for (PLUINodeView *p in self.contentNode.contentPages) {
+        if (p.nodeId && [p.nodeId isEqualToString:pageId]) { hasLuaPage = YES; break; }
+    }
+    if (hasLuaPage) {
+        [self.contentNode showLuaPage:pageId animated:NO];
+        [self dispatchLuaPageChange:token];
+        return;
+    }
+    // 原生 VC 降级路径（仅供未 Lua 化的功能页过渡，后续随服务化移除）。
+    if ([token isEqualToString:@"download"]) {
         [self showDownloadPage];
-    } else if ([page isEqualToString:@"versionManager"]) {
+    } else if ([token isEqualToString:@"versionManager"]) {
         [self showVersionManager];
-    } else if ([page isEqualToString:@"settings"]) {
+    } else if ([token isEqualToString:@"settings"]) {
         [self showSettings];
-    } else if ([page isEqualToString:@"ai"]) {
+    } else if ([token isEqualToString:@"ai"]) {
         [self showAIPage];
     } else {
         [self showHomePage];
     }
+}
+
+- (void)dispatchLuaPageChange:(NSString *)token {
+    self.currentLuaPage = token;
+    [self.runtime dispatchEvent:@"onPageChange" arguments:@[token ?: @""]];
+}
+
+- (void)pluiHandleNavigate:(NSNotification *)n {
+    NSString *token = [n.object isKindOfClass:NSString.class] ? n.object : @"home";
+    if (!self.contentNode) return;
+    NSString *pageId = [self.contentNode pageIdForToken:token];
+    BOOL hasLuaPage = NO;
+    for (PLUINodeView *p in self.contentNode.contentPages) {
+        if (p.nodeId && [p.nodeId isEqualToString:pageId]) { hasLuaPage = YES; break; }
+    }
+    if (hasLuaPage) {
+        [self.contentNode showLuaPage:pageId animated:YES];
+        [self dispatchLuaPageChange:token];
+        return;
+    }
+    // 非 Lua 页 token 回退到原生 VC 加载。
+    if ([token isEqualToString:@"versionManager"])            [self showVersionManager];
+    else if ([token isEqualToString:@"settings"])            [self showSettings];
+    else if ([token isEqualToString:@"ai"])                  [self showAIPage];
+    else if ([token isEqualToString:@"mods"])                [self showModsManager];
+    else if ([token isEqualToString:@"shaders"])             [self showShadersManager];
+    else if ([token isEqualToString:@"modpackImport"])       [self showModpackImport];
+    else if ([token isEqualToString:@"gameDirectory"])       [self showGameDirectory];
+    else if ([token isEqualToString:@"accountManager"])      [self showAccountManager];
+    else if ([token isEqualToString:@"profileEditor"])       [self showProfileEditor:nil];
+}
+
+- (void)pluiHandleOpenSubpage:(NSNotification *)n {
+    NSString *token = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onOpenSubpage" arguments:@[token]];
+}
+
+- (void)pluiHandleSwitchTab:(NSNotification *)n {
+    NSString *key = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onSwitchTab" arguments:@[key]];
+}
+
+- (void)pluiHandleSubmit:(NSNotification *)n {
+    NSString *formId = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onSubmit" arguments:@[formId]];
+}
+
+- (void)pluiHandleService:(NSNotification *)n {
+    NSString *name = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onService" arguments:@[name]];
 }
 
 - (void)refreshStateAndNotifyReady {
@@ -191,7 +334,25 @@
         @"version": @{@"name": PLProfiles.current.selectedProfileName ?: @""},
         @"darkMode": @(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark),
         @"locale": [NSLocale currentLocale].localeIdentifier ?: @"",
+        @"settings": [self launcherSettingsList],
     };
+}
+
+// 设置列表数据源（启动器拥有）：由 launcher.state.settings 提供给 UI 包渲染。
+// 启动器在此新增条目即可，UI 包无需改动 —— 引擎只提供数据，包只做渲染。
+- (NSArray<NSDictionary *> *)launcherSettingsList {
+    // 顺序即展示顺序；desc 非空时包会在卡片下方渲染灰色说明小字。
+    // 无 desc 传空串（保证 JSON/字典字段结构一致，包端按结构读取）。
+    return @[
+        @{ @"label": @"启动器设置",   @"icon": @"sf:slider.horizontal.3",        @"desc": @"",                 @"action": @"open_subpage:launcher_settings" },
+        @{ @"label": @"下载镜像策略", @"icon": @"sf:arrow.down.circle.fill",     @"desc": @"",                 @"action": @"open_subpage:download_mirror" },
+        @{ @"label": @"视频设置",     @"icon": @"sf:display",                    @"desc": @"最大分辨率、垂直同步与渲染占比等显示选项。", @"action": @"open_subpage:video_settings" },
+        @{ @"label": @"MobileGlues 渲染器", @"icon": @"sf:memorychip.fill",      @"desc": @"选择 OpenGL 兼容层，可能影响画面表现与性能。", @"action": @"open_subpage:gl_renderer" },
+        @{ @"label": @"自定义控制键", @"icon": @"sf:keyboard.fill",              @"desc": @"",                 @"action": @"open_subpage:control_keys" },
+        @{ @"label": @"Java 调整",    @"icon": @"sf:wrench.and.screwdriver.fill",@"desc": @"",                 @"action": @"open_subpage:java_tuning" },
+        @{ @"label": @"UI 设置",      @"icon": @"sf:paintbrush.fill",            @"desc": @"界面缩放与视觉效果，可导入主题材质包调整外观。", @"action": @"open_subpage:ui_theme" },
+        @{ @"label": @"AI 助手",      @"icon": @"sf:sparkles",                   @"desc": @"",                 @"action": @"open_subpage:ai_assistant" },
+    ];
 }
 
 #pragma mark - 通知注册（与旧壳相同的 13 个 Show* + 状态源）
@@ -223,6 +384,13 @@
     on(@"FindVersionInRemoteList", @selector(findVersionInRemoteList:));
     on(@"UpdateAccountInfo", @selector(accountInfoChanged));
     on(PLThemeDidChangeNotification, @selector(themeDidChange));
+
+    // 引擎通用五类动作（PLUIActionRouter 前缀解析后转发）：全部经 Lua / 内容区直渲分发。
+    on(@"PLUIActionNavigate", @selector(pluiHandleNavigate:));
+    on(@"PLUIActionOpenSubpage", @selector(pluiHandleOpenSubpage:));
+    on(@"PLUIActionSwitchTab", @selector(pluiHandleSwitchTab:));
+    on(@"PLUIActionSubmit", @selector(pluiHandleSubmit:));
+    on(@"PLUIActionService", @selector(pluiHandleService:));
 }
 
 - (void)accountInfoChanged {

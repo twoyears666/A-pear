@@ -196,6 +196,47 @@ static int PLLuaBridgeViewGetText(lua_State *L) {
     return 1;
 }
 
+static int PLLuaBridgeViewGetFrame(lua_State *L) {
+    const char *viewId = luaL_optstring(L, 1, NULL);
+    if (!viewId) { lua_pushnil(L); return 1; }
+    PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
+    NSDictionary *frame = runtime.viewFrameHandler ? runtime.viewFrameHandler(@(viewId)) : nil;
+    if (frame) PLLuaPushObject(L, frame);
+    else lua_pushnil(L);
+    return 1;
+}
+
+/// launcher.service(service, method, args)：调用宿主注册的同步服务。返回 {ok=bool, ...} 表。
+static int PLLuaBridgeService(lua_State *L) {
+    const char *service = luaL_optstring(L, 1, NULL);
+    const char *method = luaL_optstring(L, 2, "");
+    PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
+    id rawArgs = lua_gettop(L) >= 3 ? PLLuaToNSObject(L, 3) : nil;
+    NSDictionary *args = [rawArgs isKindOfClass:NSDictionary.class] ? rawArgs : nil;
+    NSDictionary *result = runtime.serviceHandler
+        ? runtime.serviceHandler(service ? @(service) : @"", @(method), args)
+        : nil;
+    PLLuaPushObject(L, result ?: @{});
+    return 1;
+}
+
+/// launcher.emit(event, payload)：广播事件给宿主（壳/其他监听方）。
+static int PLLuaBridgeEmit(lua_State *L) {
+    const char *event = luaL_optstring(L, 1, NULL);
+    PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
+    id payload = lua_gettop(L) >= 2 ? PLLuaToNSObject(L, 2) : nil;
+    if (event && runtime.emitHandler) runtime.emitHandler(@(event), payload);
+    return 0;
+}
+
+/// launcher.getState()：拉取当前完整状态快照（等同实例的 currentState）。
+static int PLLuaBridgeGetState(lua_State *L) {
+    PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
+    NSDictionary *state = runtime.stateHandler ? runtime.stateHandler() : nil;
+    PLLuaPushObject(L, state ?: @{});
+    return 1;
+}
+
 /// 指令计数钩子：只做截止时间检查，超时抛 Lua 错误（被 pcall 捕获，不崩宿主）。
 static void PLLuaTimeoutHook(lua_State *L, lua_Debug *ar) {
     PLLuaRuntime *runtime = PLLuaBridgeSelf(L);
@@ -230,6 +271,15 @@ end\n\
 function launcher.action(name)\n\
   if type(name) == 'string' then __bridge.action(name) end\n\
 end\n\
+function launcher.service(service, method, args)\n\
+  return __bridge.service(service, method, args or {})\n\
+end\n\
+function launcher.emit(event, payload)\n\
+  if type(event) == 'string' then __bridge.emit(event, payload) end\n\
+end\n\
+function launcher.getState()\n\
+  return __bridge.getState()\n\
+end\n\
 function launcher.view(id)\n\
   if type(id) ~= 'string' then return nil end\n\
   local h = { _id = id }\n\
@@ -238,10 +288,12 @@ function launcher.view(id)\n\
   function h:setImage(i) return __bridge.viewCmd(self._id, 'setImage', i) end\n\
   function h:setVisible(v) return __bridge.viewCmd(self._id, 'setVisible', v ~= false) end\n\
   function h:setEnabled(e) return __bridge.viewCmd(self._id, 'setEnabled', e ~= false) end\n\
-  function h:setStyle(s) return __bridge.viewCmd(self._id, 'setStyle', s) end\n\
-  function h:getText() return __bridge.viewGetText(self._id) end\n\
-  return h\n\
-end\n\
+  function h:setStyle(s) return __bridge.viewCmd(self._id, 'setStyle', s) end
+  function h:setFrame(rect, animated) return __bridge.viewCmd(self._id, 'setFrame', { rect = rect, animated = (animated ~= false) }) end
+  function h:getFrame() return __bridge.viewGetFrame(self._id) end
+  function h:getText() return __bridge.viewGetText(self._id) end
+  return h
+end
 ";
 
 #pragma mark - PLLuaRuntime
@@ -287,8 +339,16 @@ end\n\
         lua_setfield(_L, -2, "action");
         lua_pushcfunction(_L, PLLuaBridgeViewCmd);
         lua_setfield(_L, -2, "viewCmd");
+        lua_pushcfunction(_L, PLLuaBridgeViewGetFrame);
+        lua_setfield(_L, -2, "viewGetFrame");
         lua_pushcfunction(_L, PLLuaBridgeViewGetText);
         lua_setfield(_L, -2, "viewGetText");
+        lua_pushcfunction(_L, PLLuaBridgeService);
+        lua_setfield(_L, -2, "service");
+        lua_pushcfunction(_L, PLLuaBridgeEmit);
+        lua_setfield(_L, -2, "emit");
+        lua_pushcfunction(_L, PLLuaBridgeGetState);
+        lua_setfield(_L, -2, "getState");
         lua_setglobal(_L, "__bridge");
 
         if (![self runChunk:PLLuaPrelude name:@"prelude" error:error] ||
