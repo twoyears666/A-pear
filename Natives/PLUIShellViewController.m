@@ -251,7 +251,8 @@
         NSMutableArray *items = [NSMutableArray new];
         NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
         NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:listPath error:nil];
-        NSString *currentId = BaseAuthenticator.current.authData[@"accountId"];
+        BaseAuthenticator *auth = BaseAuthenticator.current;
+        NSString *currentId = auth.authData[@"accountId"];
         for (NSString *file in files) {
             if ([file hasSuffix:@".json"]) {
                 NSDictionary *acc = parseJSONFromFile([listPath stringByAppendingPathComponent:file]);
