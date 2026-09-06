@@ -268,6 +268,51 @@
         }
         return @{ @"ok": @YES, @"items": items };
     }
+    if ([service isEqualToString:@"gameDir"] && [method isEqualToString:@"list"]) {
+        // 已配置游戏目录：default 常驻 + POJAV_HOME/instances 下的子目录（结构式）。
+        NSMutableArray *items = [NSMutableArray new];
+        [items addObject:@{ @"id": @"default", @"name": @"default", @"selected": @NO }];
+        NSString *instancesPath = [NSString stringWithFormat:@"%s/instances", getenv("POJAV_HOME")];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:instancesPath error:nil];
+        NSString *current = getPrefObject(@"general.game_directory") ?: @"default";
+        BOOL found = NO;
+        for (NSString *file in files) {
+            BOOL isDir = NO;
+            if (![NSFileManager.defaultManager fileExistsAtPath:[instancesPath stringByAppendingPathComponent:file] isDirectory:&isDir]) continue;
+            if (!isDir || [file isEqualToString:@"default"]) continue;
+            BOOL sel = [file isEqualToString:current];
+            if (sel) found = YES;
+            [items addObject:@{ @"id": file, @"name": file, @"selected": @(sel) }];
+        }
+        items[0] = @{ @"id": @"default", @"name": @"default", @"selected": @(!found) };
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"gameDir"] && [method isEqualToString:@"set"]) {
+        NSString *name = args[@"name"];
+        if (![name isKindOfClass:NSString.class] || name.length == 0) return @{ @"ok": @NO };
+        NSArray *list = [self handleLuaService:@"gameDir" method:@"list" args:@{}][@"items"];
+        BOOL exists = NO;
+        for (NSDictionary *it in list) if ([it[@"id"] isEqualToString:name]) { exists = YES; break; }
+        if (!exists) return @{ @"ok": @NO, @"error": @"not found" };
+        [self setGameDirectory:name];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"gameDir"] && [method isEqualToString:@"new"]) {
+        // 新建游戏目录：在 POJAV_HOME/instances 下创建 <name> 目录并切换（镜像原生页脚逻辑）
+        NSString *name = args[@"name"];
+        if (![name isKindOfClass:NSString.class] || name.length == 0) return @{ @"ok": @NO };
+        NSString *dest = [NSString stringWithFormat:@"%s/instances/%@", getenv("POJAV_HOME"), name];
+        NSError *error = nil;
+        [NSFileManager.defaultManager createDirectoryAtPath:dest
+                              withIntermediateDirectories:NO
+                                              attributes:nil
+                                                   error:&error];
+        if (error != nil) {
+            return @{ @"ok": @NO, @"error": error.localizedDescription ?: @"create failed" };
+        }
+        [self setGameDirectory:name];
+        return @{ @"ok": @YES };
+    }
     if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
         // 仅描述结构：动态值由设备/运行时填充，不写死。
         return @{ @"ok": @YES,
@@ -574,6 +619,31 @@
     LauncherPrefGameDirViewController *g = [[LauncherPrefGameDirViewController alloc] init];
     [nav pushViewController:g animated:NO];
     [self setContentViewController:nav animated:YES];
+}
+
+// Lua 服务落点：切换游戏目录（镜像 LauncherPrefGameDirViewController.changeSelectionTo:）
+- (void)setGameDirectory:(NSString *)name {
+    if (getenv("DEMO_LOCK")) return;
+    setPrefObject(@"general.game_directory", name);
+    NSString *multidirPath = [NSString stringWithFormat:@"%s/instances/%@", getenv("POJAV_HOME"), name];
+    NSString *lasmPath = @(getenv("POJAV_GAME_DIR"));
+    NSError *removeError = nil;
+    [NSFileManager.defaultManager removeItemAtPath:lasmPath error:&removeError];
+    NSError *linkError = nil;
+    BOOL linkOK = [NSFileManager.defaultManager createSymbolicLinkAtPath:lasmPath
+                                                       withDestinationPath:multidirPath
+                                                                     error:&linkError];
+    if (!linkOK) {
+        NSLog(@"[GameDir] createSymbolicLink failed: %@", linkError.localizedDescription);
+        showDialog(localize(@"Error", nil),
+                   [NSString stringWithFormat:localize(@"i18n_str_363", nil), linkError.localizedDescription]);
+        return;
+    }
+    [NSFileManager.defaultManager changeCurrentDirectoryPath:lasmPath];
+    toggleIsolatedPref(NO);
+    [PLProfiles updateCurrent];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SelectedProfileChanged" object:nil];
 }
 
 - (void)showModpackImport {
