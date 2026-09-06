@@ -134,14 +134,53 @@ static PLUICrossAlign PLUIResolveCrossAlign(id value) {
 }
 
 /// 允许进入节点树的节点种类（未知种类整体丢弃，防脏数据扩散）。
+/// 布局基础原语：row/column/panel/nav/content + 叶子(button/text/image/spacer/divider/tileGrid)。
+/// 一等容器原语（供任何 UI 包调用，引擎零特例）：split_column(横向分栏)、
+/// vertical_flow(通栏纵向流)、card(白底圆角卡片)、row_item(整行条目)。
 static BOOL PLUIIsKnownKind(NSString *kind) {
     static NSSet<NSString *> *kinds;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         kinds = [NSSet setWithArray:@[@"row", @"column", @"button", @"text", @"image",
-                                      @"spacer", @"divider", @"content", @"nav", @"panel", @"tileGrid"]];
+                                      @"spacer", @"divider", @"content", @"nav", @"panel",
+                                      @"tileGrid", @"split_column", @"vertical_flow",
+                                      @"card", @"row_item"]];
     });
     return [kinds containsObject:kind];
+}
+
+/// 一等容器原语的通用默认规格（引擎零特例，pack 显式值优先）。
+/// 仅当节点缺失对应键时才回填，保证任何自定义覆盖都生效。
+static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *node) {
+    NSMutableDictionary *out = nil;
+    if ([kind isEqualToString:@"card"]) {
+        out = [node mutableCopy];
+        if (!out[@"background"]) out[@"background"] = @"$color:card";
+        if (!out[@"border"])      out[@"border"] = @{ @"width": @1, @"color": @"$color:cardBorder" };
+        if (!out[@"corner"])      out[@"corner"] = @"1.2vh";
+        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @4, @"opacity": @0.07, @"x": @0, @"y": @1 };
+        if (!out[@"padding"])     out[@"padding"] = @"2vh";
+        if (!out[@"spacing"])     out[@"spacing"] = @"1vh";
+    } else if ([kind isEqualToString:@"row_item"]) {
+        out = [node mutableCopy];
+        if (!out[@"height"])      out[@"height"] = @"8vh";
+        if (!out[@"background"])  out[@"background"] = @"$color:card";
+        if (!out[@"border"])      out[@"border"] = @{ @"width": @1, @"color": @"$color:cardBorder" };
+        if (!out[@"corner"])      out[@"corner"] = @"1.2vh";
+        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @4, @"opacity": @0.07, @"x": @0, @"y": @1 };
+        if (!out[@"hoverColor"])  out[@"hoverColor"] = @"$color:hover";
+        if (!out[@"crossAlign"])  out[@"crossAlign"] = @"center";
+        if (!out[@"padding"])     out[@"padding"] = @"2vh";
+        if (!out[@"spacing"])     out[@"spacing"] = @"1.6vh";
+    } else if ([kind isEqualToString:@"vertical_flow"]) {
+        out = [node mutableCopy];
+        if (!out[@"width"])       out[@"width"] = @"94%";      // 通栏留边 3%：内容区宽 94%
+        if (!out[@"crossAlign"])  out[@"crossAlign"] = @"center";
+    } else if ([kind isEqualToString:@"split_column"]) {
+        out = [node mutableCopy];
+        if (!out[@"crossAlign"])  out[@"crossAlign"] = @"stretch"; // 分栏等高分
+    }
+    return out ?: node;
 }
 
 @interface PLUINodeView ()
@@ -249,6 +288,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     NSString *kind = [node[@"kind"] isKindOfClass:NSString.class] ? node[@"kind"] : nil;
     if (!kind || !PLUIIsKnownKind(kind)) return NO;
     node = PLUIMergedNode(node, compact);
+    // 一等容器原语默认规格：仅填充缺失键，pack 显式值始终优先（引擎零特例）。
+    node = PLUIApplyContainerDefaults(kind, node);
 
     _kind = kind;
     _outerEdges = outerEdges;
@@ -316,6 +357,21 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         }
     }
 
+    // 阴影：shadow = { blur, opacity, x, y }（PCL2 卡片柔和投影）。
+    // 卡片同时有圆角与阴影：用 layer 圆角裁背景、阴影不裁子视图（masksToBounds=NO）。
+    if ([node[@"shadow"] isKindOfClass:NSDictionary.class]) {
+        NSDictionary *shadow = node[@"shadow"];
+        CGFloat blur = [shadow[@"blur"] isKindOfClass:NSNumber.class] ? [shadow[@"blur"] doubleValue] : 0;
+        if (blur > 0) {
+            self.layer.shadowColor = UIColor.blackColor.CGColor;
+            self.layer.shadowOpacity = [shadow[@"opacity"] isKindOfClass:NSNumber.class]
+                ? (float)[shadow[@"opacity"] doubleValue] : 0.0f;
+            self.layer.shadowRadius = blur;
+            self.layer.shadowOffset = CGSizeMake([shadow[@"x"] doubleValue], [shadow[@"y"] doubleValue]);
+            self.layer.masksToBounds = NO;
+        }
+    }
+
     // hoverColor：按下/滑入高亮底色（PCL2 条目/按钮 hover 浅蓝 #EAF3FC）。
     self.hoverBkgColor = nil; self.normalBkgColor = nil;
     id hoverSpec = node[@"hoverColor"];
@@ -342,6 +398,16 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     if ([kind isEqualToString:@"row"] || [kind isEqualToString:@"column"]) {
         _horizontalStack = [kind isEqualToString:@"row"];
         _verticalStack = !_horizontalStack;
+        [self applyChildren:node[@"children"] compact:compact dark:dark];
+    } else if ([kind isEqualToString:@"split_column"] || [kind isEqualToString:@"row_item"]) {
+        // 一等容器原语（横向分栏 / 整行条目）：均按横向栈布局，子节点只在内排布
+        _horizontalStack = YES;
+        _verticalStack = NO;
+        [self applyChildren:node[@"children"] compact:compact dark:dark];
+    } else if ([kind isEqualToString:@"vertical_flow"] || [kind isEqualToString:@"card"]) {
+        // 一等容器原语（通栏纵向流 / 白底圆角卡片）：均按纵向栈布局
+        _verticalStack = YES;
+        _horizontalStack = NO;
         [self applyChildren:node[@"children"] compact:compact dark:dark];
     } else if ([kind isEqualToString:@"panel"]) {
         // panel = column 容器（带默认内边距的可组合面板）

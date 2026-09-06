@@ -46,9 +46,11 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
+    // 先初始化版本/账号数据源：buildShell 阶段 Lua 页会通过 launcher.service
+    // 拉取版本列表，必须保证列表在 buildTree 前已就绪（否则首次构建为空）。
+    [self initializeVersionLists];
     [self buildShell];
     [self registerNotifications];
-    [self initializeVersionLists];
 }
 
 - (void)dealloc {
@@ -96,6 +98,13 @@
                 // 首块状态在 buildTree 前注入：让 build() 能读取 launcher.state.settings
                 // 等数据驱动清单，动态生成设置页条目（启动器新增条目无需改 UI 包）。
                 [runtime setState:@{ @"settings": [self launcherSettingsList] }];
+                // build() 阶段就会调用 launcher.service(version/account) 拉取列表，
+                // 因此服务分发必须在 buildTree 之前接好（否则首次构建列表为空）。
+                __weak typeof(self) weakSelf = self;
+                runtime.serviceHandler = ^NSDictionary *(NSString *service, NSString *method, NSDictionary *args) {
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    return [strongSelf handleLuaService:service method:method args:args];
+                };
                 tree = [runtime buildTreeWithError:&error];
                 if (tree) self.runtime = runtime;
             }
@@ -222,10 +231,41 @@
     if ([service isEqualToString:@"version"] && [method isEqualToString:@"current"]) {
         return @{ @"ok": @YES, @"name": PLProfiles.current.selectedProfileName ?: @"" };
     }
+    if ([service isEqualToString:@"version"] && [method isEqualToString:@"list"]) {
+        // 本地已安装版本（结构式：id + 类型占位，动态数据由磁盘填充）
+        NSMutableArray *items = [NSMutableArray new];
+        for (NSDictionary *v in self.localVersionList) {
+            BOOL selected = [v[@"id"] isEqualToString:PLProfiles.current.selectedProfileName];
+            [items addObject:@{ @"id": v[@"id"] ?: @"", @"type": v[@"type"] ?: @"custom",
+                                @"selected": @(selected) }];
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
     if ([service isEqualToString:@"account"] && [method isEqualToString:@"current"]) {
         BaseAuthenticator *auth = BaseAuthenticator.current;
         NSString *name = auth.authData[@"username"];
         return name ? @{ @"ok": @YES, @"name": name } : @{ @"ok": @NO };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"list"]) {
+        // 已保存账号：扫描 POJAV_HOME/accounts/*.json（结构式：id + username + selected）
+        NSMutableArray *items = [NSMutableArray new];
+        NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:listPath error:nil];
+        NSString *currentId = BaseAuthenticator.current.authData[@"accountId"];
+        for (NSString *file in files) {
+            if ([file hasSuffix:@".json"]) {
+                NSDictionary *acc = parseJSONFromFile([listPath stringByAppendingPathComponent:file]);
+                if (![acc isKindOfClass:NSDictionary.class]) continue;
+                NSString *aid = acc[@"accountId"] ?: acc[@"username"] ?: @"";
+                [items addObject:@{
+                    @"id": aid,
+                    @"username": acc[@"username"] ?: @"",
+                    @"type": acc[@"authType"] ?: acc[@"type"] ?: @"offline",
+                    @"selected": [aid isEqualToString:currentId] ? @YES : @NO,
+                }];
+            }
+        }
+        return @{ @"ok": @YES, @"items": items };
     }
     if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
         // 仅描述结构：动态值由设备/运行时填充，不写死。
@@ -262,10 +302,6 @@
     // 原生 VC 降级路径（仅供未 Lua 化的功能页过渡，后续随服务化移除）。
     if ([token isEqualToString:@"download"]) {
         [self showDownloadPage];
-    } else if ([token isEqualToString:@"versionManager"]) {
-        [self showVersionManager];
-    } else if ([token isEqualToString:@"settings"]) {
-        [self showSettings];
     } else if ([token isEqualToString:@"ai"]) {
         [self showAIPage];
     } else {
@@ -292,15 +328,13 @@
         return;
     }
     // 非 Lua 页 token 回退到原生 VC 加载。
-    if ([token isEqualToString:@"versionManager"])            [self showVersionManager];
-    else if ([token isEqualToString:@"settings"])            [self showSettings];
-    else if ([token isEqualToString:@"ai"])                  [self showAIPage];
-    else if ([token isEqualToString:@"mods"])                [self showModsManager];
-    else if ([token isEqualToString:@"shaders"])             [self showShadersManager];
-    else if ([token isEqualToString:@"modpackImport"])       [self showModpackImport];
-    else if ([token isEqualToString:@"gameDirectory"])       [self showGameDirectory];
-    else if ([token isEqualToString:@"accountManager"])      [self showAccountManager];
-    else if ([token isEqualToString:@"profileEditor"])       [self showProfileEditor:nil];
+    if ([token isEqualToString:@"settings"])            [self showSettings];
+    else if ([token isEqualToString:@"ai"])             [self showAIPage];
+    else if ([token isEqualToString:@"mods"])           [self showModsManager];
+    else if ([token isEqualToString:@"shaders"])        [self showShadersManager];
+    else if ([token isEqualToString:@"modpackImport"])  [self showModpackImport];
+    else if ([token isEqualToString:@"gameDirectory"])  [self showGameDirectory];
+    else if ([token isEqualToString:@"profileEditor"])  [self showProfileEditor:nil];
 }
 
 - (void)pluiHandleOpenSubpage:(NSNotification *)n {
