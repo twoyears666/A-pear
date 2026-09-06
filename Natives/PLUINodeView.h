@@ -64,8 +64,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 并触发父容器重排 —— PCL2 非启动页收起左栏、内容区全幅铺开依赖此行为。
 - (void)updateVisible:(BOOL)visible;
 
-/// content 内容区（完全数据驱动）：直接 Lua 页子树列表与页间切换（淡入淡出）。
+/// 内容区（完全数据驱动）：直接 Lua 页子树列表与页间切换（淡入淡出）。
 @property (nonatomic, readonly) NSArray<PLUINodeView *> *contentPages;
+/// content 节点的纵向滚动容器（通用滚动；页面子树挂其内；nil = 非 content 节点）。
+@property (nonatomic, readonly, nullable) UIScrollView *contentScrollView;
 - (void)showLuaPage:(nullable NSString *)pageId animated:(BOOL)animated;
 - (nullable NSString *)currentContentPage;
 /// page token → Lua 页子树 id（未命中则视为子树 id 本身）。

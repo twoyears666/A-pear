@@ -385,6 +385,21 @@
 
 - (void)pluiHandleOpenSubpage:(NSNotification *)n {
     NSString *token = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    // 次级页 = 内容区内的 Lua 页子树：token 若已注册（CONFIG.pages），直接走
+    // 与 navigate 相同的切页管线（showLuaPage + onPageChange），引擎零子页特例。
+    if (self.contentNode) {
+        NSString *pageId = [self.contentNode pageIdForToken:token];
+        BOOL hasLuaPage = NO;
+        for (PLUINodeView *p in self.contentNode.contentPages) {
+            if (p.nodeId && [p.nodeId isEqualToString:pageId]) { hasLuaPage = YES; break; }
+        }
+        if (hasLuaPage) {
+            [self.contentNode showLuaPage:pageId animated:YES];
+            [self dispatchLuaPageChange:token];
+            return;
+        }
+    }
+    // 无 Lua 次级页的令牌：回退派发给 Lua 包（onOpenSubpage），由包决定如何处理。
     [self.runtime dispatchEvent:@"onOpenSubpage" arguments:@[token]];
 }
 

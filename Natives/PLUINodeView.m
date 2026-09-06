@@ -213,6 +213,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 @property (nonatomic, copy) NSString *initialPage;
 @property (nonatomic, assign) BOOL absolute;         // absolute=true：绝对定位覆盖层
 @property (nonatomic, copy) NSDictionary *pageAliases; // content：page token → Lua 页子树 id
+/// content：纵向滚动容器（通用滚动机制；所有 Lua 页子树都挂其内，contentSize 跟随当前页内容高度）。
+@property (nonatomic, strong, nullable) UIScrollView *contentScrollView;
 @property (nonatomic, strong) UILabel *textLabel;
 @property (nonatomic, strong) UIButton *button;
 @property (nonatomic, strong) UIImageView *contentImageView;
@@ -430,6 +432,20 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
             _pageAliases = node[@"pages"];
         }
         [self applyChildren:node[@"children"] compact:compact dark:dark];
+        // 纵向滚动容器：所有 Lua 页子树挂其内（通用滚动，不再依赖每页单独的 scroll 原语）。
+        UIScrollView *sv = [[UIScrollView alloc] init];
+        sv.alwaysBounceVertical = YES;
+        sv.showsVerticalScrollIndicator = YES;
+        sv.scrollsToTop = NO;
+        sv.translatesAutoresizingMaskIntoConstraints = YES;
+        [self addSubview:sv];
+        _contentScrollView = sv;
+        for (UIView *sub in [self.subviews copy]) {
+            if (sub == sv) continue;
+            if (![sub isKindOfClass:PLUINodeView.class]) continue;
+            [sub removeFromSuperview];
+            [sv addSubview:sub];
+        }
     } else if ([kind isEqualToString:@"button"]) {
         [self buildButton:node];
     } else if ([kind isEqualToString:@"text"]) {
@@ -673,15 +689,34 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 
     // content 内容区：渲染其 children（纯 Lua 页子树）——每棵铺满内区并覆盖叠加，
     // 可见性由 showLuaPage:animated: 控制。不走下方栈布局（content 非 row/column）。
+    // 通用滚动：滚动容器铺满内区，各页子树宽 = 内区宽、高 = max(视口高, 内容自然高)，
+    // contentSize 跟随当前显示页 —— 长页面（设置/更多）可上下翻页，短页不滚动。
     if (_contentArea) {
         UIEdgeInsets cpad = [self pluiEffectivePadding];
         CGFloat innerW = self.bounds.size.width - cpad.left - cpad.right;
         CGFloat innerH = self.bounds.size.height - cpad.top - cpad.bottom;
         if (innerW <= 0 || innerH <= 0) return;
-        for (UIView *sub in self.subviews) {
-            if (![sub isKindOfClass:PLUINodeView.class]) continue;
-            ((PLUINodeView *)sub).frame = CGRectMake(cpad.left, cpad.top, innerW, innerH);
+        UIView *viewport = self.contentScrollView ?: self;
+        viewport.frame = CGRectMake(cpad.left, cpad.top, innerW, innerH);
+        if (!self.contentScrollView) {
+            for (UIView *sub in self.subviews) {
+                if (![sub isKindOfClass:PLUINodeView.class]) continue;
+                ((PLUINodeView *)sub).frame = CGRectMake(0, 0, innerW, innerH);
+            }
+            return;
         }
+        // 各页统一左起（0,0），宽度铺满；有专属横向内容直接用自己的滚动容器。
+        CGFloat scrollH = innerH;
+        NSArray<PLUINodeView *> *pages = self.contentPages;
+        for (PLUINodeView *page in pages) {
+            if (page.hidden) continue;
+            CGSize fit = [page sizeThatFits:CGSizeMake(innerW, CGFLOAT_MAX)];
+            CGFloat naturalH = (isnan(fit.height) || fit.height <= 0) ? innerH : fit.height;
+            CGFloat pageH = MAX(innerH, naturalH);
+            page.frame = CGRectMake(0, 0, innerW, pageH);
+            scrollH = MAX(scrollH, pageH);
+        }
+        self.contentScrollView.contentSize = CGSizeMake(innerW, scrollH);
         return;
     }
 
@@ -921,10 +956,11 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     return token;
 }
 
-/// content 节点的直接 Lua 页子树列表（children 的 PLUINodeView）。
+/// content 节点的直接 Lua 页子树列表（挂在内容滚动容器内的 PLUINodeView）。
 - (NSArray<PLUINodeView *> *)contentPages {
     NSMutableArray<PLUINodeView *> *pages = [NSMutableArray array];
-    for (UIView *sub in self.subviews) {
+    UIView *holder = self.contentScrollView ?: self;
+    for (UIView *sub in holder.subviews) {
         if ([sub isKindOfClass:PLUINodeView.class]) [pages addObject:(PLUINodeView *)sub];
     }
     return pages;
@@ -932,8 +968,9 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 
 /// 切换到指定 Lua 页子树，其余页隐藏（淡入淡出）。
 - (void)showLuaPage:(NSString *)pageId animated:(BOOL)animated {
+    UIView *holder = self.contentScrollView ?: self;
     PLUINodeView *target = nil;
-    for (UIView *sub in self.subviews) {
+    for (UIView *sub in holder.subviews) {
         if (![sub isKindOfClass:PLUINodeView.class]) continue;
         PLUINodeView *page = (PLUINodeView *)sub;
         if (page.nodeId && [page.nodeId isEqualToString:pageId]) { target = page; break; }
@@ -941,10 +978,12 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     if (!target) return;
     UIView *targetView = target;
     void (^apply)(void) = ^{
-        for (UIView *sub in self.subviews) {
+        for (UIView *sub in holder.subviews) {
             if (![sub isKindOfClass:PLUINodeView.class]) continue;
             sub.hidden = (sub != targetView);
         }
+        // 显示页可能高度不同 → 重排以更新各页 frame 与滚动 contentSize。
+        [self setNeedsLayout];
     };
     if (!animated) {
         apply();
@@ -957,7 +996,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 
 /// 当前显示的 Lua 页子树 id（未隐藏的那棵）。
 - (NSString *)currentContentPage {
-    for (UIView *sub in self.subviews) {
+    UIView *holder = self.contentScrollView ?: self;
+    for (UIView *sub in holder.subviews) {
         if ([sub isKindOfClass:PLUINodeView.class] && !sub.hidden) {
             NSString *pid = ((PLUINodeView *)sub).nodeId;
             if (pid) return pid;
