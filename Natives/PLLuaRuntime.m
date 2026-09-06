@@ -256,9 +256,8 @@ local function _node(kind, props)\n\
   return props\n\
 end\n\
 ui = {}\n\
-for _, k in ipairs({'row','column','button','text','image','spacer','divider','content','nav','panel','tileGrid','split_column','vertical_flow','card','row_item'}) do
-  ui[k] = function(p) return _node(k, p) end
-end\n\
+for _, k in ipairs({'row','column','button','text','image','spacer','divider','content','nav','panel','tileGrid','split_column','vertical_flow','card','row_item'}) do\n\
+  ui[k] = function(p) return _node(k, p) end\n\
 end\n\
 -- ui.dimen({phone=56, pad=70}) / ui.dimen(64)：响应式尺寸\n\
 ui.dimen = function(v)\n\
