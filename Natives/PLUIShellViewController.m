@@ -635,8 +635,13 @@
                                                                      error:&linkError];
     if (!linkOK) {
         NSLog(@"[GameDir] createSymbolicLink failed: %@", linkError.localizedDescription);
-        showDialog(localize(@"Error", nil),
-                   [NSString stringWithFormat:localize(@"i18n_str_363", nil), linkError.localizedDescription]);
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:localize(@"Error", nil)
+                              message:[NSString stringWithFormat:localize(@"i18n_str_363", nil), linkError.localizedDescription]
+                       preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil)
+                                                  style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
         return;
     }
     [NSFileManager.defaultManager changeCurrentDirectoryPath:lasmPath];
