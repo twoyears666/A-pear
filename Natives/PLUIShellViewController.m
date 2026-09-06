@@ -16,6 +16,8 @@
 #import "ProfileSettingsViewController.h"
 #import "LauncherPreferencesViewController.h"
 #import "ModsManagerViewController.h"
+#import "ModService.h"
+#import "ModItem.h"
 #import "ShadersManagerViewController.h"
 #import "ModpackImportViewController.h"
 #import "LauncherPrefGameDirViewController.h"
@@ -35,6 +37,8 @@
 @property (nonatomic, assign) BOOL isShowingProfileEditor;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *localVersionList;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
+/// 资源中心（Mods）缓存：ModService 扫描结果的 Lua 可渲染结构；refresh 后派发 onModsUpdated。
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *modsCache;
 /// 当前内容页标识（home/download/settings/...），变化时向 Lua 包派发 onPageChange
 @property (nonatomic, copy, nullable) NSString *currentLuaPage;
 /// 首个布局完成是否已向 Lua 派发 onLayout（游标等依赖真实 frame 的定位需在布局后执行）。
@@ -312,6 +316,43 @@
         }
         [self setGameDirectory:name];
         return @{ @"ok": @YES };
+    }
+    // ---- 资源中心（Mods）服务：list 同步返回缓存 / refresh 异步扫描后 emit 刷新 ----
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"list"]) {
+        if (self.modsCache.count == 0) [self restartModsScan];
+        return @{ @"ok": @YES, @"profile": PLProfiles.current.selectedProfileName ?: @"",
+                  @"items": self.modsCache ?: @[] };
+    }
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"refresh"]) {
+        [self restartModsScan];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"toggle"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.modsCache && idx < self.modsCache.count) {
+            NSDictionary *item = self.modsCache[idx];
+            ModItem *mod = [ModItem new];
+            mod.fileName = item[@"fileName"];
+            mod.filePath = item[@"filePath"];
+            mod.disabled = [item[@"enabled"] boolValue] == NO;
+            NSError *err = nil;
+            BOOL ok = [[ModService sharedService] toggleEnableForMod:mod error:&err];
+            [self restartModsScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"delete"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.modsCache && idx < self.modsCache.count) {
+            NSDictionary *item = self.modsCache[idx];
+            ModItem *mod = [ModItem new];
+            mod.fileName = item[@"fileName"];
+            mod.filePath = item[@"filePath"];
+            NSError *err = nil;
+            BOOL ok = [[ModService sharedService] deleteMod:mod error:&err];
+            [self restartModsScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
     }
     if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
         // 仅描述结构：动态值由设备/运行时填充，不写死。
@@ -664,6 +705,36 @@
     [PLProfiles updateCurrent];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SelectedProfileChanged" object:nil];
+}
+
+// 资源中心（Mods）异步扫描：ModService 扫描当前版本 mods/，结构化为缓存并推送 Lua。
+- (void)restartModsScan {
+    NSString *profile = PLProfiles.current.selectedProfileName;
+    __weak typeof(self) weakSelf = self;
+    [[ModService sharedService] scanModsForProfile:profile completion:^(NSArray<ModItem *> *mods) {
+        NSMutableArray *items = [NSMutableArray new];
+        [mods enumerateObjectsUsingBlock:^(ModItem *m, NSUInteger i, BOOL *stop) {
+            NSString *name = m.displayName.length > 0 ? m.displayName : m.fileName;
+            [items addObject:@{
+                @"name": name ?: @"",
+                @"fileName": m.fileName ?: @"",
+                @"filePath": m.filePath ?: @"",
+                @"enabled": @(!m.disabled),
+                @"author": m.author ?: @"",
+                @"gameVersion": m.gameVersion ?: @"",
+            }];
+        }];
+        // Lua 状态单线程访问：合并更新 + 事件必须回到主线程。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.modsCache = items;
+            if (strongSelf.runtime) {
+                [strongSelf.runtime dispatchEvent:@"onModsUpdated"
+                                        arguments:@[@{ @"ok": @YES, @"items": items }]];
+            }
+        });
+    }];
 }
 
 - (void)showModpackImport {
