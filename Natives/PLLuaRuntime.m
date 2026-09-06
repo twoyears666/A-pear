@@ -288,12 +288,12 @@ function launcher.view(id)\n\
   function h:setImage(i) return __bridge.viewCmd(self._id, 'setImage', i) end\n\
   function h:setVisible(v) return __bridge.viewCmd(self._id, 'setVisible', v ~= false) end\n\
   function h:setEnabled(e) return __bridge.viewCmd(self._id, 'setEnabled', e ~= false) end\n\
-  function h:setStyle(s) return __bridge.viewCmd(self._id, 'setStyle', s) end
-  function h:setFrame(rect, animated) return __bridge.viewCmd(self._id, 'setFrame', { rect = rect, animated = (animated ~= false) }) end
-  function h:getFrame() return __bridge.viewGetFrame(self._id) end
-  function h:getText() return __bridge.viewGetText(self._id) end
-  return h
-end
+  function h:setStyle(s) return __bridge.viewCmd(self._id, 'setStyle', s) end\n\
+  function h:setFrame(rect, animated) return __bridge.viewCmd(self._id, 'setFrame', { rect = rect, animated = (animated ~= false) }) end\n\
+  function h:getFrame() return __bridge.viewGetFrame(self._id) end\n\
+  function h:getText() return __bridge.viewGetText(self._id) end\n\
+  return h\n\
+end\n\
 ";
 
 #pragma mark - PLLuaRuntime
