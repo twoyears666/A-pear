@@ -84,6 +84,9 @@
             return;
         }
 
+        // 主题数据源切到激活 UI 包：$color: 令牌严格按包 colors.json 解析（黑底根治）。
+        [PLThemeManager.sharedManager loadColorsFromRoot:pack.rootPath];
+
         NSDictionary *tree = nil;
         NSString *source = [PLUIPackManager.sharedManager mainLuaSourceForPack:pack];
         if (source) {
@@ -573,9 +576,10 @@
 /// 无壁纸：铺不透明主题底色，半透明包色叠加其上呈现正常浅色观感。
 - (void)refreshShellBackdrop {
     BackgroundManager *background = [BackgroundManager sharedManager];
-    self.view.backgroundColor = background.hasBackground
-        ? [UIColor clearColor]
-        : [PLThemeManager.sharedManager colorForToken:@"background" fallback:UIColor.systemBackgroundColor];
+    // 兜底必须是浅色（仿 PCL：浅蓝灰 #E3EEF9）。禁止黑色/深灰/透明兜底。
+    UIColor *fallbackLight = [PLThemeManager.sharedManager colorFromHex:@"#E3EEF9"];
+    UIColor *base = [PLThemeManager.sharedManager colorForToken:@"background" fallback:fallbackLight] ?: fallbackLight;
+    self.view.backgroundColor = background.hasBackground ? [UIColor clearColor] : base;
 }
 
 - (void)uiEffectChanged:(NSNotification *)notification {
@@ -834,7 +838,7 @@ static UIImage *PLUIWelcomeAppIcon(void) {
 
 - (void)buildWelcomeView {
     PLThemeManager *theme = PLThemeManager.sharedManager;
-    UIColor *background = [theme colorForToken:@"background" fallback:UIColor.systemBackgroundColor];
+    UIColor *background = [theme colorForToken:@"background" fallback:[theme colorFromHex:@"#E3EEF9"] ?: UIColor.whiteColor];
     UIColor *accent = [theme colorForToken:@"accent" fallback:UIColor.systemBlueColor];
     UIColor *surface = [theme colorForToken:@"surface" fallback:UIColor.secondarySystemBackgroundColor];
     UIColor *textPrimary = [theme colorForToken:@"textPrimary" fallback:UIColor.labelColor];

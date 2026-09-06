@@ -117,6 +117,21 @@ static NSInteger const PLThemeMaxManifestVersion = 2;
     return YES;
 }
 
+/// 激活 UI 材质包（含 colors.json）时：直接以包根的 colors.json 作为主题数据源，
+/// 让 $color: 令牌严格按 UI 包解析。导入包在 uipack/active，themes 机制看不到它，
+/// 此前令牌解析失效回落深色兜底（黑底）—— 本方法是"主题真正生效"的根治点。
+- (BOOL)loadColorsFromRoot:(NSString *)root {
+    if (![root isKindOfClass:NSString.class] || root.length == 0) return NO;
+    NSDictionary *colors = [self JSONDictionaryAtPath:[root stringByAppendingPathComponent:@"colors.json"]];
+    if (!colors) return NO;
+    self.activeIdentifier = root.lastPathComponent ?: PLDefaultThemeIdentifier;
+    self.displayName = self.activeIdentifier;
+    self.colors = colors;
+    self.images = @{};
+    self.themeRoot = root;
+    return YES;
+}
+
 - (void)reload {
     NSString *selected = getPrefObject(@"general.theme_pack");
     if (![selected isKindOfClass:NSString.class] || ![self loadIdentifier:selected]) {
