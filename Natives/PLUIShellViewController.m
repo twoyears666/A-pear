@@ -290,6 +290,50 @@
         NSString *name = auth.authData[@"username"] ?: @"";
         return @{ @"ok": @YES, @"name": name };
     }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"list"]) {
+        // 版本独立设置的读写读写：返回当前 profile 各字段真实值（未设置为默认）。
+        NSDictionary *prof = PLProfiles.current.selectedProfile ?: @{};
+        NSArray *keys = @[@"versionIsolation", @"windowTitle", @"windowInfo",
+                          @"javaVersion", @"ramType", @"ram", @"ramOptimize", @"serverIp", @"loginMode"];
+        NSDictionary *defs = @{
+            @"versionIsolation": @"开启",
+            @"windowTitle": @"",
+            @"windowInfo": @"",
+            @"javaVersion": @"自动选择",
+            @"ramType": @"自动配置",
+            @"ram": @"",
+            @"ramOptimize": @"跟随全局设置",
+            @"serverIp": @"",
+            @"loginMode": @"正版登录或离线登录",
+        };
+        NSMutableArray *items = [NSMutableArray new];
+        for (NSString *k in keys) {
+            id v = prof[k];
+            if (![v isKindOfClass:NSString.class]) v = defs[k] ?: @"";
+            [items addObject:@{ @"key": k, @"value": v ?: @"" }];
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"set"]) {
+        // 写入当前 profile 的版本独立设置（白名单 key，存 launcher_profiles.json 的 profiles.<name>）。
+        static NSSet<NSString *> *allowed = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            allowed = [NSSet setWithArray:@[@"versionIsolation", @"windowTitle", @"windowInfo",
+                                            @"javaVersion", @"ramType", @"ram", @"ramOptimize", @"serverIp", @"loginMode"]];
+        });
+        NSString *k = args[@"key"];
+        id rawV = args[@"value"];
+        if (![k isKindOfClass:NSString.class] || ![allowed containsObject:k]) return @{ @"ok": @NO };
+        NSString *v = [rawV isKindOfClass:NSString.class] ? rawV : @"";
+        PLProfiles *p = PLProfiles.current;
+        NSString *name = p.selectedProfileName;
+        if (name.length == 0) return @{ @"ok": @NO };
+        NSMutableDictionary *profile = [[p.profiles objectForKey:name] mutableCopy] ?: [NSMutableDictionary new];
+        profile[k] = v;
+        [p saveProfile:profile withName:name];
+        return @{ @"ok": @YES };
+    }
     if ([service isEqualToString:@"instance"] && [method isEqualToString:@"list"]) {
         // 版本选择界面右侧目录：直接渲染 /Documents/instances 下所有文件夹（default 为根目录内置，不列入）。
         NSMutableArray *items = [NSMutableArray new];
