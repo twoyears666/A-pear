@@ -262,13 +262,50 @@
                 NSDictionary *acc = parseJSONFromFile([listPath stringByAppendingPathComponent:file]);
                 if (![acc isKindOfClass:NSDictionary.class]) continue;
                 NSString *aid = acc[@"accountId"] ?: acc[@"username"] ?: @"";
+                // 分类：按 json 特征判定（离线=无有效期；微软/第三方按 clientToken），供 UI 包「离线/正版」过滤。
+                NSNumber *exp = acc[@"expiresAt"];
+                NSString *type;
+                if ([exp longValue] == 0) type = @"offline";
+                else type = (acc[@"clientToken"] != nil) ? @"thirdparty" : @"microsoft";
                 [items addObject:@{
                     @"id": aid,
                     @"username": acc[@"username"] ?: @"",
-                    @"type": acc[@"authType"] ?: acc[@"type"] ?: @"offline",
+                    @"type": type,
                     @"selected": [aid isEqualToString:currentId] ? @YES : @NO,
                 }];
             }
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"select"]) {
+        // 切换当前账号：args.id = 已存账号的 accountId，加载并设为 current（复用 loadSavedName，路径同为 Documents/accounts）。
+        NSString *aid = args[@"id"];
+        if (![aid isKindOfClass:NSString.class] || aid.length == 0) return @{ @"ok": @NO };
+        NSString *path = [NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), aid];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return @{ @"ok": @NO };
+        BaseAuthenticator *auth = [BaseAuthenticator loadSavedName:aid];
+        if (!auth) return @{ @"ok": @NO };
+        setPrefObject(@"internal.selected_account", aid);
+        [self accountInfoChanged];
+        NSString *name = auth.authData[@"username"] ?: @"";
+        return @{ @"ok": @YES, @"name": name };
+    }
+    if ([service isEqualToString:@"instance"] && [method isEqualToString:@"list"]) {
+        // 版本选择界面右侧目录：直接渲染 /Documents/instances 下所有文件夹（default 为根目录内置，不列入）。
+        NSMutableArray *items = [NSMutableArray new];
+        NSString *instPath = [NSString stringWithFormat:@"%s/instances", getenv("POJAV_HOME")];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:instPath error:nil];
+        NSString *current = getPrefObject(@"general.game_directory") ?: @"default";
+        for (NSString *file in files) {
+            BOOL isDir = NO;
+            if (![NSFileManager.defaultManager fileExistsAtPath:[instPath stringByAppendingPathComponent:file] isDirectory:&isDir]) continue;
+            if (!isDir || [file isEqualToString:@"default"]) continue;
+            [items addObject:@{
+                @"id": file,
+                @"name": file,
+                @"path": [instPath stringByAppendingPathComponent:file],
+                @"selected": [file isEqualToString:current] ? @YES : @NO,
+            }];
         }
         return @{ @"ok": @YES, @"items": items };
     }
