@@ -33,33 +33,6 @@ static CGFloat PLUIResolveDimen(id value, BOOL compact) {
     return PLUINodeAuto;
 }
 
-/// "4.5vh" → 窗口高度倍数（H 基准）；非法返回 -1（非 vh 规范）。
-/// 注意：窗口高在 applyNode 阶段未知（视图尚未入窗），仅返回倍数，
-/// 由调用方在布局时结合当前窗口高解析成具体像素。
-static CGFloat PLUIResolveVHFactor(id value) {
-    if (![value isKindOfClass:NSString.class]) return -1;
-    NSString *spec = (NSString *)value;
-    if (![spec hasSuffix:@"vh"]) return -1;
-    double k = [spec substringToIndex:spec.length - 2].doubleValue;
-    if (k <= 0 || k > 100) return -1;
-    return (CGFloat)(k / 100.0);
-}
-
-/// HSL 明度增量调整（hover 提亮用，delta 如 0.05）。
-static UIColor *PLUIAdjustBrightness(UIColor *color, CGFloat delta) {
-    if (!color) return color;
-    CGFloat h = 0, s = 0, b = 0, a = 1;
-    if (![color getHue:&h saturation:&s brightness:&b alpha:&a]) {
-        const CGFloat *c = CGColorGetComponents(color.CGColor);
-        if (CGColorGetNumberOfComponents(color.CGColor) >= 3) {
-            b = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
-            s = 0; h = 0; a = CGColorGetAlpha(color.CGColor);
-        }
-    }
-    b = MIN(1.0, MAX(0.0, b + delta));
-    return [UIColor colorWithHue:h saturation:s brightness:b alpha:a];
-}
-
 static UIColor *PLUIResolveColor(id spec, UIColor *fallback) {
     if (![spec isKindOfClass:NSString.class] || [(NSString *)spec length] == 0) return fallback;
     if ([spec hasPrefix:@"$color:"]) {
@@ -90,20 +63,6 @@ static NSString *PLUIResolveText(id spec) {
     return spec;
 }
 
-static UIFontWeight PLUIResolveFontWeight(id value) {
-    NSString *weightName = [value isKindOfClass:NSString.class] ? value : nil;
-    if ([weightName isEqualToString:@"medium"]) return UIFontWeightMedium;
-    if ([weightName isEqualToString:@"semibold"]) return UIFontWeightSemibold;
-    if ([weightName isEqualToString:@"bold"]) return UIFontWeightBold;
-    if ([weightName isEqualToString:@"light"]) return UIFontWeightLight;
-    return UIFontWeightRegular;
-}
-
-static UIFont *PLUIFontFromStyle(NSDictionary *style) {
-    CGFloat size = [style[@"font"] isKindOfClass:NSNumber.class] ? [style[@"font"] doubleValue] : 15;
-    return [UIFont systemFontOfSize:size weight:PLUIResolveFontWeight(style[@"weight"])];
-}
-
 static UIEdgeInsets PLUIResolvePadding(id value) {
     if ([value isKindOfClass:NSNumber.class]) {
         CGFloat inset = [value doubleValue];
@@ -115,38 +74,6 @@ static UIEdgeInsets PLUIResolvePadding(id value) {
         return UIEdgeInsetsMake(top, left, bottom, right);
     }
     return UIEdgeInsetsZero;
-}
-
-/// 单边 padding：px 数值 px、vh 字符串返回倍数（px 记 -1 表示占位）。
-typedef struct { CGFloat px; CGFloat vh; } PLEdgeSpec;
-static PLEdgeSpec PLUIResolveEdgeSpec(id v) {
-    PLEdgeSpec e = { .px = -1, .vh = 0 };
-    if ([v isKindOfClass:NSNumber.class]) {
-        e.px = [v doubleValue];
-    } else if ([v isKindOfClass:NSString.class]) {
-        CGFloat f = PLUIResolveVHFactor(v);
-        if (f > 0) e.vh = f;
-        else e.px = [v doubleValue];
-    }
-    return e;
-}
-
-/// padding 扩展解析：每边可为 px 数值或 "x.xvh" 字符串（相对窗口高 H 比例）。
-/// 输出两组边距：px（固定像素边）、vh（窗口高倍数边）；调用方在布局时用
-/// 当前窗口高把 vh 边换算成像素后叠加，保证内边距随窗口等比缩放。
-static void PLUIResolvePaddingPair(id value, UIEdgeInsets *px, UIEdgeInsets *vh) {
-    *px = UIEdgeInsetsZero;
-    *vh = UIEdgeInsetsZero;
-    if ([value isKindOfClass:NSNumber.class]) {
-        CGFloat inset = [value doubleValue];
-        *px = UIEdgeInsetsMake(inset, inset, inset, inset);
-    } else if ([value isKindOfClass:NSDictionary.class]) {
-        PLEdgeSpec e;
-        e = PLUIResolveEdgeSpec(value[@"top"]);    (*px).top    = (e.vh > 0) ? 0 : e.px;    (*vh).top    = e.vh;
-        e = PLUIResolveEdgeSpec(value[@"left"]);   (*px).left   = (e.vh > 0) ? 0 : e.px;    (*vh).left   = e.vh;
-        e = PLUIResolveEdgeSpec(value[@"bottom"]); (*px).bottom = (e.vh > 0) ? 0 : e.px;    (*vh).bottom = e.vh;
-        e = PLUIResolveEdgeSpec(value[@"right"]);  (*px).right  = (e.vh > 0) ? 0 : e.px;    (*vh).right  = e.vh;
-    }
 }
 
 /// 主轴分布（justify）：默认 start，非权重内容块整体居中/尾部对齐。
@@ -174,6 +101,17 @@ static CGFloat PLUIResolvePercent(id value) {
     return (CGFloat)(pct / 100.0);
 }
 
+/// "8.5vh" → 8.5（相对窗口高 1H 的百分系数，1vh = H/100）。
+/// 布局期用窗口高解析成 pt；非 vh 规格返回 0。
+static CGFloat PLUIVHFactor(id value) {
+    if (![value isKindOfClass:NSString.class]) return 0;
+    NSString *spec = (NSString *)value;
+    if (spec.length < 3 || ![spec hasSuffix:@"vh"]) return 0;
+    double factor = [spec substringToIndex:spec.length - 2].doubleValue;
+    if (factor > 0) return (CGFloat)factor;
+    return 0;
+}
+
 static PLUIJustify PLUIResolveJustify(id value) {
     if (![value isKindOfClass:NSString.class]) return PLUIJustifyStart;
     NSString *spec = (NSString *)value;
@@ -196,14 +134,53 @@ static PLUICrossAlign PLUIResolveCrossAlign(id value) {
 }
 
 /// 允许进入节点树的节点种类（未知种类整体丢弃，防脏数据扩散）。
+/// 布局基础原语：row/column/panel/nav/content + 叶子(button/text/image/spacer/divider/tileGrid)。
+/// 一等容器原语（供任何 UI 包调用，引擎零特例）：split_column(横向分栏)、
+/// vertical_flow(通栏纵向流)、card(白底圆角卡片)、row_item(整行条目)。
 static BOOL PLUIIsKnownKind(NSString *kind) {
     static NSSet<NSString *> *kinds;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         kinds = [NSSet setWithArray:@[@"row", @"column", @"button", @"text", @"image",
-                                      @"spacer", @"divider", @"content", @"nav", @"panel", @"tileGrid"]];
+                                      @"spacer", @"divider", @"content", @"nav", @"panel",
+                                      @"tileGrid", @"split_column", @"vertical_flow",
+                                      @"card", @"row_item"]];
     });
     return [kinds containsObject:kind];
+}
+
+/// 一等容器原语的通用默认规格（引擎零特例，pack 显式值优先）。
+/// 仅当节点缺失对应键时才回填，保证任何自定义覆盖都生效。
+static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *node) {
+    NSMutableDictionary *out = nil;
+    if ([kind isEqualToString:@"card"]) {
+        out = [node mutableCopy];
+        if (!out[@"background"]) out[@"background"] = @"$color:card";
+        if (!out[@"border"])      out[@"border"] = @{ @"width": @1, @"color": @"$color:cardBorder" };
+        if (!out[@"corner"])      out[@"corner"] = @"1.2vh";
+        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @4, @"opacity": @0.07, @"x": @0, @"y": @1 };
+        if (!out[@"padding"])     out[@"padding"] = @"2vh";
+        if (!out[@"spacing"])     out[@"spacing"] = @"1vh";
+    } else if ([kind isEqualToString:@"row_item"]) {
+        out = [node mutableCopy];
+        if (!out[@"height"])      out[@"height"] = @"8vh";
+        if (!out[@"background"])  out[@"background"] = @"$color:card";
+        if (!out[@"border"])      out[@"border"] = @{ @"width": @1, @"color": @"$color:cardBorder" };
+        if (!out[@"corner"])      out[@"corner"] = @"1.2vh";
+        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @4, @"opacity": @0.07, @"x": @0, @"y": @1 };
+        if (!out[@"hoverColor"])  out[@"hoverColor"] = @"$color:hover";
+        if (!out[@"crossAlign"])  out[@"crossAlign"] = @"center";
+        if (!out[@"padding"])     out[@"padding"] = @"2vh";
+        if (!out[@"spacing"])     out[@"spacing"] = @"1.6vh";
+    } else if ([kind isEqualToString:@"vertical_flow"]) {
+        out = [node mutableCopy];
+        if (!out[@"width"])       out[@"width"] = @"94%";      // 通栏留边 3%：内容区宽 94%
+        if (!out[@"crossAlign"])  out[@"crossAlign"] = @"center";
+    } else if ([kind isEqualToString:@"split_column"]) {
+        out = [node mutableCopy];
+        if (!out[@"crossAlign"])  out[@"crossAlign"] = @"stretch"; // 分栏等高分
+    }
+    return out ?: node;
 }
 
 @interface PLUINodeView ()
@@ -216,39 +193,35 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 @property (nonatomic, assign) BOOL horizontalStack;
 @property (nonatomic, assign) BOOL verticalStack;
 @property (nonatomic, assign) CGFloat spacing;
-@property (nonatomic, assign) CGFloat spacingVH;   // "6vh"（相对 H）层面的间距，0 = 用 spacing
 @property (nonatomic, assign) UIEdgeInsets padding;
-    // padding 的 vh 边（相对窗口高 H 倍数），布局时用当前窗口高换算成像素叠加到 padding。
-    @property (nonatomic, assign) UIEdgeInsets paddingVH;
 @property (nonatomic, assign) CGFloat fixedWidth;
 @property (nonatomic, assign) CGFloat fixedHeight;
 @property (nonatomic, assign) CGFloat widthPercent;   // "85%" 相对父容器主/交叉轴
 @property (nonatomic, assign) CGFloat heightPercent;
-// vh 尺寸（相对窗口高 H 的倍数，"4.5vh" 层面）：0 = 未使用
-@property (nonatomic, assign) CGFloat widthVH;
-@property (nonatomic, assign) CGFloat heightVH;
-@property (nonatomic, assign) CGFloat sizeVH;          // 正方形边长
-@property (nonatomic, assign) BOOL highlightEnabled;  // hover 提亮开关（node[@"highlight"]）
+// vh 系数（相对窗口高 1H 的百分系数，布局期乘以窗口高/100 得 pt）。0 = 未指定。
+@property (nonatomic, assign) CGFloat vhWidth;
+@property (nonatomic, assign) CGFloat vhHeight;
+@property (nonatomic, assign) CGFloat vhSpace;        // spacing vh 系数
+@property (nonatomic, assign) CGFloat vhPadTop, vhPadLeft, vhPadBottom, vhPadRight;
+@property (nonatomic, assign) CGFloat vhCorner;       // corner vh 系数
 @property (nonatomic, assign) PLUIJustify justify;
 @property (nonatomic, assign) PLUICrossAlign crossAlign;
 @property (nonatomic, assign) BOOL pillCorner;        // corner="pill"：圆角=高/2，布局时生效
-@property (nonatomic, assign) CGFloat cornerVH;         // "1vh" 圆角（相对窗口高 H），布局时换算
 @property (nonatomic, strong, nullable) CAGradientLayer *gradientLayer;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *tapGesture;
 @property (nonatomic, assign) UIRectEdge outerEdges;
 @property (nonatomic, copy) NSString *initialPage;
+@property (nonatomic, assign) BOOL absolute;         // absolute=true：绝对定位覆盖层
+@property (nonatomic, copy) NSDictionary *pageAliases; // content：page token → Lua 页子树 id
+/// content：纵向滚动容器（通用滚动机制；所有 Lua 页子树都挂其内，contentSize 跟随当前页内容高度）。
+@property (nonatomic, strong, nullable) UIScrollView *contentScrollView;
 @property (nonatomic, strong) UILabel *textLabel;
 @property (nonatomic, strong) UIButton *button;
 @property (nonatomic, strong) UIImageView *contentImageView;
-// vh 字号倍数（"2.8vh" 层面），布局时结合窗口高重建字体；0 = 用固定字号
-@property (nonatomic, assign) CGFloat fontVH;
-@property (nonatomic, assign) UIFontWeight fontWeight;
-@property (nonatomic, copy) NSString *fontTintSpec;     // node[@"tint"] 图片着色 / 文字色
-// hover 提亮：按下前的基础底色，用于松手后还原
-@property (nonatomic, strong, nullable) UIColor *highlightBaseBackground;
-@property (nonatomic, strong, nullable) UIColor *highlightBaseButtonBackground;
-// hover 指定底色（浅色主题 hover 变浅蓝 #EAF3FC）；nil = 退回明度 +5% 提亮
-@property (nonatomic, strong, nullable) UIColor *highlightColor;
+// 通用 hover：节点设置 hoverColor 后，按下/滑入呈浅蓝高亮，松手/滑出恢复原底色。
+@property (nonatomic, strong, nullable) UIColor *hoverBkgColor;
+@property (nonatomic, strong, nullable) UIColor *normalBkgColor;
+@property (nonatomic, assign) BOOL hoverTracking;
 @end
 
 @implementation PLUINodeView
@@ -264,9 +237,47 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     return self;
 }
 
-/// vh 基准：以窗口高为 H（vh = H * k / 100）。布局阶段视图未必入窗，退用屏幕高。
-- (CGFloat)windowHeight {
-    return self.window ? CGRectGetHeight(self.window.bounds) : CGRectGetHeight(UIScreen.mainScreen.bounds);
+#pragma mark - vh 单位（相对窗口高 1H 的百分缩放）
+
+/// 参考高度：沿 superview 链爬到最外层容器取其高度（= 窗口高 1H）；尚未布局时退回屏幕高。
+- (CGFloat)pluiReferenceHeight {
+    UIView *r = self;
+    while (r.superview) r = r.superview;
+    CGFloat h = r.bounds.size.height;
+    return h > 0 ? h : (UIScreen.mainScreen.bounds.size.height ?: 0);
+}
+
+/// 1vh 对应的 pt 数 = 窗口高 / 100。
+- (CGFloat)pluiVHUnit {
+    return [self pluiReferenceHeight] / 100.0;
+}
+
+- (CGFloat)pluiEffectiveSpacing {
+    return _vhSpace > 0 ? _vhSpace * [self pluiVHUnit] : _spacing;
+}
+
+- (UIEdgeInsets)pluiEffectivePadding {
+    if (_vhPadTop == 0 && _vhPadLeft == 0 && _vhPadBottom == 0 && _vhPadRight == 0) return _padding;
+    CGFloat vh = [self pluiVHUnit];
+    return UIEdgeInsetsMake(_vhPadTop > 0 ? _vhPadTop * vh : _padding.top,
+                            _vhPadLeft > 0 ? _vhPadLeft * vh : _padding.left,
+                            _vhPadBottom > 0 ? _vhPadBottom * vh : _padding.bottom,
+                            _vhPadRight > 0 ? _vhPadRight * vh : _padding.right);
+}
+
+/// style[@"font"] = 数字(pt) 或 "Nvh"（= N% 窗口高），weight 决定字重。
+- (UIFont *)pluiFontFromStyle:(NSDictionary *)style {
+    id fontSpec = style[@"font"];
+    CGFloat vhFactor = PLUIVHFactor(fontSpec);
+    CGFloat size = ([fontSpec isKindOfClass:NSNumber.class] ? [fontSpec doubleValue] : 0);
+    if (size <= 0) size = vhFactor > 0 ? vhFactor * [self pluiVHUnit] : 15;
+    NSString *weightName = [style[@"weight"] isKindOfClass:NSString.class] ? style[@"weight"] : @"regular";
+    UIFontWeight weight = UIFontWeightRegular;
+    if ([weightName isEqualToString:@"medium"]) weight = UIFontWeightMedium;
+    else if ([weightName isEqualToString:@"semibold"]) weight = UIFontWeightSemibold;
+    else if ([weightName isEqualToString:@"bold"]) weight = UIFontWeightBold;
+    else if ([weightName isEqualToString:@"light"]) weight = UIFontWeightLight;
+    return [UIFont systemFontOfSize:size weight:weight];
 }
 
 #pragma mark - 节点应用
@@ -279,6 +290,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     NSString *kind = [node[@"kind"] isKindOfClass:NSString.class] ? node[@"kind"] : nil;
     if (!kind || !PLUIIsKnownKind(kind)) return NO;
     node = PLUIMergedNode(node, compact);
+    // 一等容器原语默认规格：仅填充缺失键，pack 显式值始终优先（引擎零特例）。
+    node = PLUIApplyContainerDefaults(kind, node);
 
     _kind = kind;
     _outerEdges = outerEdges;
@@ -287,24 +300,34 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _bind = [node[@"bind"] isKindOfClass:NSString.class] ? node[@"bind"] : nil;
     _weight = [node[@"weight"] isKindOfClass:NSNumber.class] ? [node[@"weight"] doubleValue] : 0;
     _spacing = [node[@"spacing"] isKindOfClass:NSNumber.class] ? [node[@"spacing"] doubleValue] : 8;
-    // "6vh" 层面的间距（相对窗口高 H）：解析到倍数，布局时结合窗口高换算像素
-    _spacingVH = PLUIResolveVHFactor(node[@"spacing"]);
-    PLUIResolvePaddingPair(node[@"padding"], &_padding, &_paddingVH);
-    // vh 尺寸（"4.5vh" 相对窗口高）：优先于固定值/百分比，布局时解析成像素
-    _widthVH = PLUIResolveVHFactor(node[@"width"]);
-    _heightVH = PLUIResolveVHFactor(node[@"height"]);
-    _fixedWidth = _widthVH > 0 ? PLUINodeAuto : PLUIResolveDimen(node[@"width"], compact);
-    _fixedHeight = _heightVH > 0 ? PLUINodeAuto : PLUIResolveDimen(node[@"height"], compact);
-    // 百分比尺寸（"85%"）：仅在既无固定值也无 vh 时参与布局
-    _widthPercent = (isnan(_fixedWidth) && _widthVH <= 0) ? PLUIResolvePercent(node[@"width"]) : 0;
-    _heightPercent = (isnan(_fixedHeight) && _heightVH <= 0) ? PLUIResolvePercent(node[@"height"]) : 0;
-    _highlightEnabled = [node[@"highlight"] isKindOfClass:NSNumber.class]
-        ? [node[@"highlight"] boolValue] : YES;
-    // hover 指定底色：hoverColor（浅色主题整行条目 hover → 浅蓝 #EAF3FC）
-    _highlightColor = PLUIResolveColor(node[@"hoverColor"], nil);
+    _vhSpace = PLUIVHFactor(node[@"spacing"]);
+    _padding = PLUIResolvePadding(node[@"padding"]);
+    // vh 内边距：dict 各侧或 number 整体；命中 vh 则以窗口高缩放
+    _vhPadTop = _vhPadLeft = _vhPadBottom = _vhPadRight = 0;
+    id paddingSpec = node[@"padding"];
+    if ([paddingSpec isKindOfClass:NSDictionary.class]) {
+        _vhPadTop = PLUIVHFactor(paddingSpec[@"top"]);
+        _vhPadLeft = PLUIVHFactor(paddingSpec[@"left"]);
+        _vhPadBottom = PLUIVHFactor(paddingSpec[@"bottom"]);
+        _vhPadRight = PLUIVHFactor(paddingSpec[@"right"]);
+    } else if ([paddingSpec isKindOfClass:NSNumber.class]) {
+        CGFloat f = PLUIVHFactor(paddingSpec);
+        if (f > 0) _vhPadTop = _vhPadLeft = _vhPadBottom = _vhPadRight = f;
+    }
+    _fixedWidth = PLUIResolveDimen(node[@"width"], compact);
+    _fixedHeight = PLUIResolveDimen(node[@"height"], compact);
+    // vh 尺寸（"8.5vh"="8.5% 的窗口高"，布局期乘 H/100 得 pt）
+    _vhWidth = isnan(_fixedWidth) ? PLUIVHFactor(node[@"width"]) : 0;
+    _vhHeight = isnan(_fixedHeight) ? PLUIVHFactor(node[@"height"]) : 0;
+    // 百分比尺寸（"85%"）：仅在无固定且无 vh 时参与布局（主轴=占父主轴比例，交叉轴同理）
+    _widthPercent = (isnan(_fixedWidth) && _vhWidth <= 0) ? PLUIResolvePercent(node[@"width"]) : 0;
+    _heightPercent = (isnan(_fixedHeight) && _vhHeight <= 0) ? PLUIResolvePercent(node[@"height"]) : 0;
     _justify = PLUIResolveJustify(node[@"justify"]);
     _crossAlign = PLUIResolveCrossAlign(node[@"crossAlign"]);
     _initialPage = [node[@"initialPage"] isKindOfClass:NSString.class] ? node[@"initialPage"] : nil;
+    // absolute=true：绝对定位覆盖层（如顶栏页签滑动白色高亮游标），
+    // 不参与父容器栈布局，用 setFrame 显式定位。
+    _absolute = [node[@"absolute"] isKindOfClass:NSNumber.class] ? [node[@"absolute"] boolValue] : NO;
 
     // 背景：字符串=纯色；字典 {from,to,angle}=线性渐变（PCL2 内容区对角渐变）
     if ([node[@"background"] isKindOfClass:NSDictionary.class]) {
@@ -336,34 +359,57 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         }
     }
 
-    // 投影：shadow = { blur, opacity, x, y }（浅色主题白底卡片的极浅投影）。
-    // 卡片自身带 white 背景 + 圆角，投影由同一个 layer 绘制，故必须 masksToBounds=NO。
+    // 阴影：shadow = { blur, opacity, x, y }（PCL2 卡片柔和投影）。
+    // 卡片同时有圆角与阴影：用 layer 圆角裁背景、阴影不裁子视图（masksToBounds=NO）。
     if ([node[@"shadow"] isKindOfClass:NSDictionary.class]) {
-        NSDictionary *sh = node[@"shadow"];
-        self.layer.shadowColor = [UIColor blackColor].CGColor;
-        self.layer.shadowOpacity = [sh[@"opacity"] isKindOfClass:NSNumber.class] ? [sh[@"opacity"] floatValue] : 0.06f;
-        self.layer.shadowRadius  = [sh[@"blur"] isKindOfClass:NSNumber.class] ? [sh[@"blur"] doubleValue] : 4.0;
-        self.layer.shadowOffset  = CGSizeMake([sh[@"x"] isKindOfClass:NSNumber.class] ? [sh[@"x"] doubleValue] : 0,
-                                              [sh[@"y"] isKindOfClass:NSNumber.class] ? [sh[@"y"] doubleValue] : 1.0);
-        self.layer.masksToBounds = NO;
+        NSDictionary *shadow = node[@"shadow"];
+        CGFloat blur = [shadow[@"blur"] isKindOfClass:NSNumber.class] ? [shadow[@"blur"] doubleValue] : 0;
+        if (blur > 0) {
+            self.layer.shadowColor = UIColor.blackColor.CGColor;
+            self.layer.shadowOpacity = [shadow[@"opacity"] isKindOfClass:NSNumber.class]
+                ? (float)[shadow[@"opacity"] doubleValue] : 0.0f;
+            self.layer.shadowRadius = blur;
+            self.layer.shadowOffset = CGSizeMake([shadow[@"x"] doubleValue], [shadow[@"y"] doubleValue]);
+            self.layer.masksToBounds = NO;
+        }
     }
 
-    // 尺寸：size = 正方形边长（支持 vh）
-    _sizeVH = PLUIResolveVHFactor(node[@"size"]);
-    if (_sizeVH > 0) {
-        _fixedWidth = PLUINodeAuto;
-        _fixedHeight = PLUINodeAuto;
-    } else {
-        CGFloat square = PLUIResolveDimen(node[@"size"], compact);
-        if (!isnan(square)) {
-            _fixedWidth = square;
-            _fixedHeight = square;
+    // hoverColor：按下/滑入高亮底色（PCL2 条目/按钮 hover 浅蓝 #EAF3FC）。
+    self.hoverBkgColor = nil; self.normalBkgColor = nil;
+    id hoverSpec = node[@"hoverColor"];
+    if ([hoverSpec isKindOfClass:NSString.class] && [(NSString *)hoverSpec length] > 0) {
+        UIColor *hover = PLUIResolveColor(hoverSpec, nil);
+        if (hover) {
+            self.hoverBkgColor = hover;
+            self.normalBkgColor = self.backgroundColor;
+            self.userInteractionEnabled = YES; // 容器行 hover 需可触；按钮节点由 UIControl 接管
         }
+    }
+
+    // 尺寸：size = 正方形边长（数字 pt 或 "Nvh"）
+    CGFloat square = PLUIResolveDimen(node[@"size"], compact);
+    CGFloat squareVH = PLUIVHFactor(node[@"size"]);
+    if (!isnan(square) && square > 0) {
+        _fixedWidth = square;
+        _fixedHeight = square;
+    } else if (squareVH > 0) {
+        _vhWidth = squareVH;
+        _vhHeight = squareVH;
     }
 
     if ([kind isEqualToString:@"row"] || [kind isEqualToString:@"column"]) {
         _horizontalStack = [kind isEqualToString:@"row"];
         _verticalStack = !_horizontalStack;
+        [self applyChildren:node[@"children"] compact:compact dark:dark];
+    } else if ([kind isEqualToString:@"split_column"] || [kind isEqualToString:@"row_item"]) {
+        // 一等容器原语（横向分栏 / 整行条目）：均按横向栈布局，子节点只在内排布
+        _horizontalStack = YES;
+        _verticalStack = NO;
+        [self applyChildren:node[@"children"] compact:compact dark:dark];
+    } else if ([kind isEqualToString:@"vertical_flow"] || [kind isEqualToString:@"card"]) {
+        // 一等容器原语（通栏纵向流 / 白底圆角卡片）：均按纵向栈布局
+        _verticalStack = YES;
+        _horizontalStack = NO;
         [self applyChildren:node[@"children"] compact:compact dark:dark];
     } else if ([kind isEqualToString:@"panel"]) {
         // panel = column 容器（带默认内边距的可组合面板）
@@ -377,14 +423,29 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         _spacing = [node[@"spacing"] isKindOfClass:NSNumber.class] ? [node[@"spacing"] doubleValue] : 12;
         [self applyNavItems:node compact:compact dark:dark];
     } else if ([kind isEqualToString:@"content"]) {
+        // 完全数据驱动：content 节点真实渲染其 children（每棵 = 纯 Lua 页子树），
+        // 由 showLuaPage:animated: 负责页间切换（淡入淡出），不再仅作原生 VC 占位。
         _contentArea = YES;
         if (_weight <= 0) _weight = 1; // 内容区默认伸展
-        // 内容区作为宿主容器承载页面子树：5 棵纯 Lua 页面列纵向堆叠，
-        // 靠隐藏节点坍缩只露出当前页整幅铺开；原生功能页作为子视图叠在其上。
-        _verticalStack = YES;
-        _horizontalStack = NO;
-        _spacing = 0;
+        // 页面别名表（UI 包配置）：page token → Lua 页子树 id。引擎不写死任何页面名。
+        if ([node[@"pages"] isKindOfClass:NSDictionary.class]) {
+            _pageAliases = node[@"pages"];
+        }
         [self applyChildren:node[@"children"] compact:compact dark:dark];
+        // 纵向滚动容器：所有 Lua 页子树挂其内（通用滚动，不再依赖每页单独的 scroll 原语）。
+        UIScrollView *sv = [[UIScrollView alloc] init];
+        sv.alwaysBounceVertical = YES;
+        sv.showsVerticalScrollIndicator = YES;
+        sv.scrollsToTop = NO;
+        sv.translatesAutoresizingMaskIntoConstraints = YES;
+        [self addSubview:sv];
+        _contentScrollView = sv;
+        for (UIView *sub in [self.subviews copy]) {
+            if (sub == sv) continue;
+            if (![sub isKindOfClass:PLUINodeView.class]) continue;
+            [sub removeFromSuperview];
+            [sv addSubview:sub];
+        }
     } else if ([kind isEqualToString:@"button"]) {
         [self buildButton:node];
     } else if ([kind isEqualToString:@"text"]) {
@@ -452,43 +513,35 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _button.translatesAutoresizingMaskIntoConstraints = YES; // 父节点手动布局
     NSDictionary *style = [node[@"style"] isKindOfClass:NSDictionary.class] ? node[@"style"] : @{};
     NSString *title = PLUIResolveText(node[@"label"] ?: node[@"text"]);
-    UIColor *buttonTint = PLUIResolveColor(node[@"tint"] ?: style[@"tint"], [UIColor labelColor]);
     if (title) {
         [_button setTitle:title forState:UIControlStateNormal];
-        [_button setTitleColor:buttonTint forState:UIControlStateNormal];
+        UIColor *tint = PLUIResolveColor(style[@"tint"], [UIColor labelColor]);
+        [_button setTitleColor:tint forState:UIControlStateNormal];
+        _button.titleLabel.font = [self pluiFontFromStyle:style];
     }
     UIImage *icon = PLUIResolveImage(node[@"icon"]);
     if (icon) {
-        if (buttonTint) {
-            icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-            _button.tintColor = buttonTint;
-        }
+        UIColor *tint = PLUIResolveColor(style[@"tint"], nil);
+        if (tint) icon = [icon imageWithTintColor:tint];
         [_button setImage:icon forState:UIControlStateNormal];
     }
     _button.backgroundColor = PLUIResolveColor(style[@"background"], _button.backgroundColor);
-    // 药丸页签等图文按钮的水平内边距（节点 padding 映射到按钮 contentEdgeInsets，
-    // px/vh 分别解析，vh 以屏幕高兜底换算——按钮内边距随窗口高缩放）
-    {
-        UIEdgeInsets ppx = UIEdgeInsetsZero, pvh = UIEdgeInsetsZero;
-        PLUIResolvePaddingPair(node[@"padding"], &ppx, &pvh);
-        CGFloat bh = CGRectGetHeight(UIScreen.mainScreen.bounds);
-        UIEdgeInsets btnPad = UIEdgeInsetsMake(ppx.top + pvh.top * bh, ppx.left + pvh.left * bh,
-                                               ppx.bottom + pvh.bottom * bh, ppx.right + pvh.right * bh);
-        if (!UIEdgeInsetsEqualToEdgeInsets(btnPad, UIEdgeInsetsZero)) {
-            _button.contentEdgeInsets = btnPad;
-        }
+    // 按钮 hover：按下/拖入高亮，松手/滑出恢复（UIControl 接管触摸，不走 touches 覆盖）。
+    if (self.hoverBkgColor) {
+        self.normalBkgColor = _button.backgroundColor;
+        [_button addTarget:self action:@selector(buttonHoverOn:)
+          forControlEvents:(UIControlEventTouchDown | UIControlEventTouchDragEnter)];
+        [_button addTarget:self action:@selector(buttonHoverOff:)
+          forControlEvents:(UIControlEventTouchUpInside | UIControlEventTouchUpOutside
+                                 | UIControlEventTouchDragExit | UIControlEventTouchCancel)];
     }
-    // vh 字号：存倍数，布局时结合窗口高重建字体
-    [self applyFontNode:node style:style toLabel:_button.titleLabel];
+    // 药丸页签等图文按钮的水平内边距（节点 padding 映射到按钮 contentEdgeInsets）
+    UIEdgeInsets btnPad = PLUIResolvePadding(node[@"padding"]);
+    if (!UIEdgeInsetsEqualToEdgeInsets(btnPad, UIEdgeInsetsZero)) {
+        _button.contentEdgeInsets = btnPad;
+    }
     [self addSubview:_button];
     [_button addTarget:self action:@selector(nodeTapped:) forControlEvents:UIControlEventTouchUpInside];
-    if (_highlightEnabled) {
-        [_button addTarget:self action:@selector(buttonHighlightOn:)
-          forControlEvents:UIControlEventTouchDown];
-        [_button addTarget:self action:@selector(buttonHighlightOff:)
-          forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside
-                   | UIControlEventTouchCancel];
-    }
 }
 
 - (void)buildText:(NSDictionary *)node {
@@ -496,27 +549,10 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _textLabel.translatesAutoresizingMaskIntoConstraints = YES;
     NSDictionary *style = [node[@"style"] isKindOfClass:NSDictionary.class] ? node[@"style"] : @{};
     _textLabel.text = PLUIResolveText(node[@"text"] ?: node[@"label"]) ?: @"";
-    _textLabel.textColor = PLUIResolveColor(node[@"tint"] ?: style[@"color"], [UIColor labelColor]);
+    _textLabel.font = [self pluiFontFromStyle:style];
+    _textLabel.textColor = PLUIResolveColor(style[@"color"], [UIColor labelColor]);
     _textLabel.adjustsFontForContentSizeCategory = YES;
-    [self applyFontNode:node style:style toLabel:_textLabel];
     [self addSubview:_textLabel];
-}
-
-/// 应用字体样式；label 为按钮 titleLabel 或文本 UILabel。
-/// style.font 若为 "x.xvh" 字符串则记为倍数（布局时结合窗口高重建），否则用固定字号。
-- (void)applyFontNode:(NSDictionary *)node style:(NSDictionary *)style toLabel:(UILabel *)label {
-    CGFloat fh = PLUIResolveVHFactor(style[@"font"]);
-    if (fh > 0) {
-        self.fontVH = fh;
-        self.fontWeight = PLUIResolveFontWeight(style[@"weight"]);
-    } else {
-        self.fontVH = 0;
-        label.font = PLUIFontFromStyle(style);
-    }
-    // 顶点层 weight 兜底（text/button 未套 style 时）
-    if (self.fontWeight == UIFontWeightRegular) {
-        self.fontWeight = PLUIResolveFontWeight(node[@"weight"]);
-    }
 }
 
 - (void)buildImage:(NSDictionary *)node compact:(BOOL)compact {
@@ -525,48 +561,28 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     _contentImageView.contentMode = UIViewContentModeScaleAspectFit;
     _contentImageView.image = PLUIResolveImage(node[@"icon"] ?: node[@"src"]);
     NSDictionary *style = [node[@"style"] isKindOfClass:NSDictionary.class] ? node[@"style"] : @{};
-    UIColor *tint = PLUIResolveColor(node[@"tint"] ?: style[@"tint"], nil);
-    if (tint) {
-        _contentImageView.image = [_contentImageView.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        _contentImageView.tintColor = tint;
-    }
+    _contentImageView.tintColor = PLUIResolveColor(style[@"tint"], _contentImageView.tintColor);
     _contentImageView.backgroundColor = PLUIResolveColor(node[@"background"], _contentImageView.backgroundColor);
     [self addSubview:_contentImageView];
 }
 
-#pragma mark - hover 提亮（明度 +5%，按下提亮、松手还原）
-
-- (void)buttonHighlightOn:(UIButton *)button {
-    if (!self.highlightBaseButtonBackground) self.highlightBaseButtonBackground = button.backgroundColor;
-    // 指定 hover 底色优先（如浅色条目 hover → 浅蓝），否则退回明度 +5% 提亮
-    UIColor *target = self.highlightColor ?: PLUIAdjustBrightness(self.highlightBaseButtonBackground, 0.05);
-    if (target) button.backgroundColor = target;
-}
-
-- (void)buttonHighlightOff:(UIButton *)button {
-    if (self.highlightBaseButtonBackground) button.backgroundColor = self.highlightBaseButtonBackground;
-}
-
 - (void)applyCorner:(NSDictionary *)node {
-    id cornerSpec = node[@"corner"];
     // "pill"：全圆药丸（PCL2 顶栏选中页签/胶囊标签），圆角=高/2，布局时应用
-    if ([cornerSpec isKindOfClass:NSString.class] && [cornerSpec isEqualToString:@"pill"]) {
+    if ([node[@"corner"] isKindOfClass:NSString.class] &&
+        [node[@"corner"] isEqualToString:@"pill"]) {
         _pillCorner = YES;
-        _cornerVH = 0;
         return;
     }
-    // "1vh" 圆角（相对窗口高 H 的比例）：布局时结合窗口高换算像素
-    CGFloat vh = PLUIResolveVHFactor(cornerSpec);
-    if (vh > 0) {
-        _cornerVH = vh;
-        _pillCorner = NO;
-        return;
-    }
-    CGFloat corner = [cornerSpec isKindOfClass:NSNumber.class] ? [cornerSpec doubleValue] : 0;
-    if (corner <= 0) { _cornerVH = 0; return; }
-    _cornerVH = 0;
+    _vhCorner = PLUIVHFactor(node[@"corner"]);
+    CGFloat corner = [node[@"corner"] isKindOfClass:NSNumber.class] ? [node[@"corner"] doubleValue] : 0;
+    if (corner <= 0 && _vhCorner <= 0) return;
     NSString *mask = [node[@"cornerMask"] isKindOfClass:NSString.class] ? node[@"cornerMask"] : @"all";
-    self.layer.cornerRadius = corner;
+    if (_vhCorner > 0) {
+        // vh 圆角：radius 依赖窗口高，推迟到 layoutSubviews 应用；圆角范围在此定
+        self.layer.cornerRadius = 0;
+    } else {
+        self.layer.cornerRadius = corner;
+    }
     if ([mask isEqualToString:@"outer"]) {
         // 只圆"贴外"的角：两条相邻边都在外沿才生效
         CACornerMask corners = 0;
@@ -596,6 +612,51 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     if (self.tapHandler) self.tapHandler(self);
 }
 
+#pragma mark - 通用 hover 高亮
+
+- (void)setHovered:(BOOL)hovered {
+    if (!self.hoverBkgColor) return;
+    UIColor *normal = self.normalBkgColor ?: (self.button ? self.button.backgroundColor : nil);
+    UIColor *target = hovered ? self.hoverBkgColor : normal;
+    if (self.button) {
+        self.button.backgroundColor = target;
+    } else if (target) {
+        self.backgroundColor = target;
+    }
+}
+
+- (void)buttonHoverOn:(id)sender { [self setHovered:YES]; }
+- (void)buttonHoverOff:(id)sender { [self setHovered:NO]; }
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    self.hoverTracking = YES;
+    [self setHovered:YES];
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    self.hoverTracking = NO;
+    [self setHovered:NO];
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    self.hoverTracking = NO;
+    [self setHovered:NO];
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    UITouch *touch = touches.anyObject;
+    if (!touch) return;
+    BOOL inside = [self pointInside:[touch locationInView:self] withEvent:event];
+    if (inside != self.hoverTracking) {
+        self.hoverTracking = inside;
+        [self setHovered:inside];
+    }
+}
+
 #pragma mark - 布局（row/column 栈：固定尺寸 + 权重分配）
 
 - (void)layoutSubviews {
@@ -603,16 +664,8 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
     // 药丸圆角与渐变层依赖最终 frame，在叶子/栈布局前先应用
     if (_pillCorner) self.layer.cornerRadius = self.bounds.size.height / 2.0;
-    else if (_cornerVH > 0) self.layer.cornerRadius = _cornerVH * [self windowHeight];
+    else if (_vhCorner > 0) self.layer.cornerRadius = _vhCorner * [self pluiVHUnit];
     if (_gradientLayer) _gradientLayer.frame = self.bounds;
-
-    // vh 字号重建：依赖窗口高（H 基准），每次布局刷新，保证随窗口高等比缩放
-    if (self.fontVH > 0) {
-        CGFloat size = self.fontVH * [self windowHeight];
-        UIFont *font = [UIFont systemFontOfSize:size weight:self.fontWeight];
-        if (self.textLabel) self.textLabel.font = font;
-        if (self.button) self.button.titleLabel.font = font;
-    }
 
     // 叶子内容贴合自身 bounds。必须在栈早退之前执行：button/text/image 都是
     // 叶子节点（非 stack），早退后它们的 UIKit 子视图永远停留在 CGRectZero
@@ -623,6 +676,50 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     // UIButton 自身负责图文内容居中。此前按 min(宽,高) 居中裁切文字按钮。
     if (self.button) self.button.frame = self.bounds;
 
+    // absolute 覆盖层默认铺满父内区（次级页全屏 / 顶栏游标初始位置），
+    // 之后可由 launcher.view(id):setFrame 显式重新定位（frame 非空则不再覆盖）。
+    for (UIView *sub in self.subviews) {
+        if (![sub isKindOfClass:PLUINodeView.class]) continue;
+        PLUINodeView *pv = (PLUINodeView *)sub;
+        if (!pv.absolute || !CGRectIsEmpty(pv.frame)) continue;
+        pv.frame = CGRectMake(self.padding.left, self.padding.top,
+                              self.bounds.size.width - self.padding.left - self.padding.right,
+                              self.bounds.size.height - self.padding.top - self.padding.bottom);
+    }
+
+    // content 内容区：渲染其 children（纯 Lua 页子树）——每棵铺满内区并覆盖叠加，
+    // 可见性由 showLuaPage:animated: 控制。不走下方栈布局（content 非 row/column）。
+    // 通用滚动：滚动容器铺满内区，各页子树宽 = 内区宽、高 = max(视口高, 内容自然高)，
+    // contentSize 跟随当前显示页 —— 长页面（设置/更多）可上下翻页，短页不滚动。
+    if (_contentArea) {
+        UIEdgeInsets cpad = [self pluiEffectivePadding];
+        CGFloat innerW = self.bounds.size.width - cpad.left - cpad.right;
+        CGFloat innerH = self.bounds.size.height - cpad.top - cpad.bottom;
+        if (innerW <= 0 || innerH <= 0) return;
+        UIView *viewport = self.contentScrollView ?: self;
+        viewport.frame = CGRectMake(cpad.left, cpad.top, innerW, innerH);
+        if (!self.contentScrollView) {
+            for (UIView *sub in self.subviews) {
+                if (![sub isKindOfClass:PLUINodeView.class]) continue;
+                ((PLUINodeView *)sub).frame = CGRectMake(0, 0, innerW, innerH);
+            }
+            return;
+        }
+        // 各页统一左起（0,0），宽度铺满；有专属横向内容直接用自己的滚动容器。
+        CGFloat scrollH = innerH;
+        NSArray<PLUINodeView *> *pages = self.contentPages;
+        for (PLUINodeView *page in pages) {
+            if (page.hidden) continue;
+            CGSize fit = [page sizeThatFits:CGSizeMake(innerW, CGFLOAT_MAX)];
+            CGFloat naturalH = (isnan(fit.height) || fit.height <= 0) ? innerH : fit.height;
+            CGFloat pageH = MAX(innerH, naturalH);
+            page.frame = CGRectMake(0, 0, innerW, pageH);
+            scrollH = MAX(scrollH, pageH);
+        }
+        self.contentScrollView.contentSize = CGSizeMake(innerW, scrollH);
+        return;
+    }
+
     if (!self.horizontalStack && !self.verticalStack) return;
     BOOL horizontal = self.horizontalStack;
 
@@ -631,20 +728,19 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
 
     // 隐藏节点坍缩（PCL2 行为：非启动页收起左栏，内容区全幅铺开）：
     // hidden 子节点不参与主轴分配与 spacing 计数，其余子节点重新瓜分空间。
+    // absolute 覆盖层（如顶栏药丸游标）同样不参与栈布局。
     NSMutableArray<PLUINodeView *> *visibleChildren = nil;
     for (UIView *sub in children) {
         if (![sub isKindOfClass:PLUINodeView.class] || sub.hidden) continue;
+        PLUINodeView *pv = (PLUINodeView *)sub;
+        if (pv.absolute) continue;
         if (!visibleChildren) visibleChildren = [NSMutableArray array];
-        [visibleChildren addObject:(PLUINodeView *)sub];
+        [visibleChildren addObject:pv];
     }
     if (visibleChildren.count == 0) return;
     children = visibleChildren;
 
-    CGFloat H0 = [self windowHeight];
-    UIEdgeInsets pad = UIEdgeInsetsMake(self.padding.top + self.paddingVH.top * H0,
-                                        self.padding.left + self.paddingVH.left * H0,
-                                        self.padding.bottom + self.paddingVH.bottom * H0,
-                                        self.padding.right + self.paddingVH.right * H0);
+    UIEdgeInsets pad = [self pluiEffectivePadding];
     CGFloat mainLen = horizontal ? self.bounds.size.width - pad.left - pad.right
                                  : self.bounds.size.height - pad.top - pad.bottom;
     CGFloat crossLen = horizontal ? self.bounds.size.height - pad.top - pad.bottom
@@ -652,8 +748,7 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     if (mainLen <= 0 || crossLen <= 0) return;
 
     NSUInteger n = children.count;
-    CGFloat spacing = self.spacingVH > 0 ? self.spacingVH * H0 : self.spacing;
-    CGFloat spacingTotal = spacing * (CGFloat)(n - 1);
+    CGFloat spacingTotal = [self pluiEffectiveSpacing] * (CGFloat)(n - 1);
     CGFloat fixedTotal = 0;
     CGFloat weightSum = 0;
     NSMutableArray<NSNumber *> *mains = [NSMutableArray arrayWithCapacity:n];
@@ -661,13 +756,6 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         CGFloat main = PLUINodeAuto;
         if (![sub isKindOfClass:PLUINodeView.class]) { [mains addObject:@(0)]; continue; }
         PLUINodeView *child = (PLUINodeView *)sub;
-        // 有效宽/高（vh > 百分比间接使用的固定值 > 固定像素）：sizeVH 同时提供宽高
-        CGFloat effW = child.widthVH > 0 ? child.widthVH * H0
-                     : child.sizeVH > 0 ? child.sizeVH * H0
-                     : (isnan(child.fixedWidth) ? PLUINodeAuto : child.fixedWidth);
-        CGFloat effH = child.heightVH > 0 ? child.heightVH * H0
-                     : child.sizeVH > 0 ? child.sizeVH * H0
-                     : (isnan(child.fixedHeight) ? PLUINodeAuto : child.fixedHeight);
         if (child.weight > 0) {
             weightSum += child.weight;
         } else if (horizontal && child.widthPercent > 0) {
@@ -675,10 +763,15 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
             main = child.widthPercent * mainLen;
         } else if (!horizontal && child.heightPercent > 0) {
             main = child.heightPercent * mainLen;
-        } else if (horizontal && !isnan(effW)) {
-            main = effW;
-        } else if (!horizontal && !isnan(effH)) {
-            main = effH;
+        } else if (horizontal && child.vhWidth > 0) {
+            // vh 尺寸："8.5vh" = 8.5% 窗口高（布局期统一用窗口高参考）
+            main = child.vhWidth * [child pluiVHUnit];
+        } else if (!horizontal && child.vhHeight > 0) {
+            main = child.vhHeight * [child pluiVHUnit];
+        } else if (horizontal && !isnan(child.fixedWidth)) {
+            main = child.fixedWidth;
+        } else if (!horizontal && !isnan(child.fixedHeight)) {
+            main = child.fixedHeight;
         } else {
             main = [child preferredMainSizeForCrossSize:crossLen horizontal:horizontal];
             if (isnan(main)) main = 0;
@@ -707,19 +800,16 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
             main = (weightSum > 0 && child.weight > 0) ? weightedAvail * child.weight / weightSum : 0;
         }
 
-        // 交叉轴尺寸（flex 语义）：百分比 > vh/固定尺寸 > stretch 铺满 > 按内容对齐
+        // 交叉轴尺寸（flex 语义）：百分比 > vh > 固定尺寸 > stretch 铺满 > 按内容对齐
         // 固定尺寸优先于 stretch：PCL2 固定高药丸在默认 stretch 容器内保持原高不被拉变形
-        CGFloat effCW = child.widthVH > 0 ? child.widthVH * H0
-                       : child.sizeVH > 0 ? child.sizeVH * H0
-                       : (isnan(child.fixedWidth) ? PLUINodeAuto : child.fixedWidth);
-        CGFloat effCH = child.heightVH > 0 ? child.heightVH * H0
-                       : child.sizeVH > 0 ? child.sizeVH * H0
-                       : (isnan(child.fixedHeight) ? PLUINodeAuto : child.fixedHeight);
         CGFloat crossPct = horizontal ? child.heightPercent : child.widthPercent;
-        CGFloat fixedCross = horizontal ? effCH : effCW;
+        CGFloat vhCross = horizontal ? child.vhHeight : child.vhWidth;
+        CGFloat fixedCross = horizontal ? child.fixedHeight : child.fixedWidth;
         CGFloat childCross;
         if (crossPct > 0) {
             childCross = crossPct * crossLen;
+        } else if (vhCross > 0) {
+            childCross = vhCross * [child pluiVHUnit];
         } else if (!isnan(fixedCross)) {
             childCross = fixedCross;
         } else if (_crossAlign == PLUICrossAlignStretch) {
@@ -738,7 +828,7 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         } else {
             child.frame = CGRectMake(crossOffset, offset, childCross, main);
         }
-        offset += main + spacing;
+        offset += main + [self pluiEffectiveSpacing];
     }
 }
 
@@ -772,38 +862,37 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     // 此前容器返回 CGSizeZero，嵌套 row/column 在列/行里高度/宽度塌为 0。
     if (self.horizontalStack || self.verticalStack) {
         BOOL horizontal = self.horizontalStack;
-        CGFloat hv = [self windowHeight];
-        UIEdgeInsets pad = UIEdgeInsetsMake(self.padding.top + self.paddingVH.top * hv,
-                                            self.padding.left + self.paddingVH.left * hv,
-                                            self.padding.bottom + self.paddingVH.bottom * hv,
-                                            self.padding.right + self.paddingVH.right * hv);
+        UIEdgeInsets pad = [self pluiEffectivePadding];
+        CGFloat spacing = [self pluiEffectiveSpacing];
         CGFloat main = 0, cross = 0;
         NSUInteger count = 0;
         for (UIView *sub in self.subviews) {
             if (![sub isKindOfClass:PLUINodeView.class] || sub.hidden) continue;
             PLUINodeView *child = (PLUINodeView *)sub;
+            if (child.absolute) continue; // 绝对定位覆盖层不参与内容测量
             count++;
             // 权重子节点无法预知分配量，退化为固有尺寸作为估计值
             CGSize intrinsic = [child sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+            CGFloat vhUnit = [child pluiVHUnit];
             CGFloat childMain, childCross;
             if (horizontal) {
                 childMain = !isnan(child.fixedWidth) ? child.fixedWidth
-                          : [child preferredMainSizeForCrossSize:CGFLOAT_MAX horizontal:YES];
-                childCross = !isnan(child.fixedHeight) ? child.fixedHeight : intrinsic.height;
+                          : (child.vhWidth > 0 ? child.vhWidth * vhUnit
+                             : [child preferredMainSizeForCrossSize:CGFLOAT_MAX horizontal:YES]);
+                childCross = !isnan(child.fixedHeight) ? child.fixedHeight
+                          : (child.vhHeight > 0 ? child.vhHeight * vhUnit : intrinsic.height);
             } else {
                 childMain = !isnan(child.fixedHeight) ? child.fixedHeight
-                          : [child preferredMainSizeForCrossSize:CGFLOAT_MAX horizontal:NO];
-                childCross = !isnan(child.fixedWidth) ? child.fixedWidth : intrinsic.width;
+                          : (child.vhHeight > 0 ? child.vhHeight * vhUnit
+                             : [child preferredMainSizeForCrossSize:CGFLOAT_MAX horizontal:NO]);
+                childCross = !isnan(child.fixedWidth) ? child.fixedWidth
+                          : (child.vhWidth > 0 ? child.vhWidth * vhUnit : intrinsic.width);
             }
             if (isnan(childMain)) childMain = 0;
             main += childMain;
             cross = MAX(cross, childCross);
         }
-        if (count > 1) {
-            CGFloat h = [self windowHeight];
-            CGFloat sp = self.spacingVH > 0 ? self.spacingVH * h : self.spacing;
-            main += sp * (CGFloat)(count - 1);
-        }
+        if (count > 1) main += spacing * (CGFloat)(count - 1);
         main += horizontal ? (pad.left + pad.right) : (pad.top + pad.bottom);
         cross += horizontal ? (pad.top + pad.bottom) : (pad.left + pad.right);
         return horizontal ? CGSizeMake(main, cross) : CGSizeMake(cross, main);
@@ -856,28 +945,90 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     [self setNeedsLayout];
 }
 
-/// 页面淡入淡出：animated 时为透明→不透明 alpha 过渡，否则退化为 updateVisible。
-/// 隐藏节点仍在栈布局中坍缩（alpha 到 0 + hidden），页码切换复用此行为。
-- (void)fadeToVisible:(BOOL)visible duration:(NSTimeInterval)duration {
-    BOOL toHidden = !visible;
-    if (self.hidden == toHidden) return;
-    if (duration <= 0) {
-        [self updateVisible:visible];
+#pragma mark - content 内容区页切换（完全数据驱动）
+
+/// 页面 token → Lua 页子树 id 解析（pageAliase 未命中则视为子树 id 本身）。
+- (NSString *)pageIdForToken:(NSString *)token {
+    if (self.pageAliases && [self.pageAliases isKindOfClass:NSDictionary.class]) {
+        id pid = self.pageAliases[token];
+        if ([pid isKindOfClass:NSString.class] && [(NSString *)pid length] > 0) return pid;
+    }
+    return token;
+}
+
+/// content 节点的直接 Lua 页子树列表（挂在内容滚动容器内的 PLUINodeView）。
+- (NSArray<PLUINodeView *> *)contentPages {
+    NSMutableArray<PLUINodeView *> *pages = [NSMutableArray array];
+    UIView *holder = self.contentScrollView ?: self;
+    for (UIView *sub in holder.subviews) {
+        if ([sub isKindOfClass:PLUINodeView.class]) [pages addObject:(PLUINodeView *)sub];
+    }
+    return pages;
+}
+
+/// 切换到指定 Lua 页子树，其余页隐藏（淡入淡出）。
+- (void)showLuaPage:(NSString *)pageId animated:(BOOL)animated {
+    UIView *holder = self.contentScrollView ?: self;
+    PLUINodeView *target = nil;
+    for (UIView *sub in holder.subviews) {
+        if (![sub isKindOfClass:PLUINodeView.class]) continue;
+        PLUINodeView *page = (PLUINodeView *)sub;
+        if (page.nodeId && [page.nodeId isEqualToString:pageId]) { target = page; break; }
+    }
+    if (!target) return;
+    UIView *targetView = target;
+    void (^apply)(void) = ^{
+        for (UIView *sub in holder.subviews) {
+            if (![sub isKindOfClass:PLUINodeView.class]) continue;
+            sub.hidden = (sub != targetView);
+        }
+        // 显示页可能高度不同 → 重排以更新各页 frame 与滚动 contentSize。
+        [self setNeedsLayout];
+    };
+    if (!animated) {
+        apply();
         return;
     }
-    [self.superview setNeedsLayout];
-    if (toHidden) {
-        if (self.alpha < 1.0) self.alpha = 1.0; // 保证从可见态淡出
-    } else {
-        self.hidden = NO; // 先解除 hidden，布局坍缩恢复
-        self.alpha = 0.0;
-        [self setNeedsLayout];
+    [UIView transitionWithView:self duration:0.25
+                       options:UIViewAnimationOptionTransitionCrossDissolve
+                    animations:apply completion:nil];
+}
+
+/// 当前显示的 Lua 页子树 id（未隐藏的那棵）。
+- (NSString *)currentContentPage {
+    UIView *holder = self.contentScrollView ?: self;
+    for (UIView *sub in holder.subviews) {
+        if ([sub isKindOfClass:PLUINodeView.class] && !sub.hidden) {
+            NSString *pid = ((PLUINodeView *)sub).nodeId;
+            if (pid) return pid;
+        }
     }
-    [UIView animateWithDuration:duration
-        animations:^{ self.alpha = toHidden ? 0.0 : 1.0; }
-        completion:^(BOOL finished) {
-            if (toHidden) { self.hidden = YES; [self.superview setNeedsLayout]; }
-        }];
+    return nil;
+}
+
+#pragma mark - 绝对定位（launcher.view(id):setFrame / getFrame 落点，用于游标平滑滑动）
+
+- (void)updateFrameRect:(NSDictionary *)rect animated:(BOOL)animated {
+    if (![rect isKindOfClass:NSDictionary.class]) return;
+    CGFloat w = [rect[@"w"] isKindOfClass:NSNumber.class] ? [rect[@"w"] doubleValue]
+              : ([rect[@"width"] isKindOfClass:NSNumber.class] ? [rect[@"width"] doubleValue] : self.bounds.size.width);
+    CGFloat h = [rect[@"h"] isKindOfClass:NSNumber.class] ? [rect[@"h"] doubleValue]
+              : ([rect[@"height"] isKindOfClass:NSNumber.class] ? [rect[@"height"] doubleValue] : self.bounds.size.height);
+    CGRect to = CGRectMake(
+        [rect[@"x"] isKindOfClass:NSNumber.class] ? [rect[@"x"] doubleValue] : self.frame.origin.x,
+        [rect[@"y"] isKindOfClass:NSNumber.class] ? [rect[@"y"] doubleValue] : self.frame.origin.y,
+        w, h);
+    if (!animated) {
+        self.frame = to;
+        return;
+    }
+    [UIView animateWithDuration:0.22 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{ self.frame = to; } completion:nil];
+}
+
+- (NSDictionary *)currentFrameRect {
+    return @{ @"x": @(self.frame.origin.x), @"y": @(self.frame.origin.y),
+              @"w": @(self.frame.size.width), @"h": @(self.frame.size.height) };
 }
 
 #pragma mark - 手势与样式（launcher.view(id):setStyle / 容器可点击）
@@ -908,12 +1059,21 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
             _gradientLayer = nil;
         }
         self.backgroundColor = PLUIResolveColor(bg, self.backgroundColor);
+        // 按钮可见底色在 _button 上（wrapper 透明），选中白底药丸必须同步到按钮
+        if (self.button) {
+            self.button.backgroundColor = self.backgroundColor;
+            if (self.hoverBkgColor) self.normalBkgColor = self.backgroundColor;
+        }
     }
     id tint = spec[@"tint"];
     if ([tint isKindOfClass:NSString.class]) {
         UIColor *color = PLUIResolveColor(tint, nil);
         if (color) {
-            if (self.button) [self.button setTitleColor:color forState:UIControlStateNormal];
+            if (self.button) {
+                [self.button setTitleColor:color forState:UIControlStateNormal];
+                UIImage *img = [self.button imageForState:UIControlStateNormal];
+                if (img) [self.button setImage:[img imageWithTintColor:color] forState:UIControlStateNormal];
+            }
             if (self.textLabel) self.textLabel.textColor = color;
         }
     }
@@ -932,27 +1092,6 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
         self.layer.cornerRadius = [corner doubleValue];
     }
     [self setNeedsLayout];
-}
-
-#pragma mark - 容器可点击节点 hover 提亮（无 UIButton 的 action 容器，如整卡条目）
-
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesBegan:touches withEvent:event];
-    if (self.highlightEnabled && self.action.length > 0 && !self.button) {
-        if (!self.highlightBaseBackground) self.highlightBaseBackground = self.backgroundColor;
-        UIColor *target = self.highlightColor ?: PLUIAdjustBrightness(self.highlightBaseBackground, 0.05);
-        if (target) self.backgroundColor = target;
-    }
-}
-
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesEnded:touches withEvent:event];
-    if (self.highlightBaseBackground) { self.backgroundColor = self.highlightBaseBackground; self.highlightBaseBackground = nil; }
-}
-
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesCancelled:touches withEvent:event];
-    if (self.highlightBaseBackground) { self.backgroundColor = self.highlightBaseBackground; self.highlightBaseBackground = nil; }
 }
 
 #pragma mark - 元数据

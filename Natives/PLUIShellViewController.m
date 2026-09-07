@@ -16,6 +16,9 @@
 #import "ProfileSettingsViewController.h"
 #import "LauncherPreferencesViewController.h"
 #import "ModsManagerViewController.h"
+#import "ModService.h"
+#import "ShaderService.h"
+#import "ModItem.h"
 #import "ShadersManagerViewController.h"
 #import "ModpackImportViewController.h"
 #import "LauncherPrefGameDirViewController.h"
@@ -36,8 +39,14 @@
 @property (nonatomic, assign) BOOL isShowingProfileEditor;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *localVersionList;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
+/// 资源中心（Mods）缓存：ModService 扫描结果的 Lua 可渲染结构；refresh 后派发 onModsUpdated。
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *modsCache;
+/// 光影包（Shaders）缓存：ShaderService 扫描结果的 Lua 可渲染结构；refresh 后派发 onShadersUpdated。
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *shadersCache;
 /// 当前内容页标识（home/download/settings/...），变化时向 Lua 包派发 onPageChange
 @property (nonatomic, copy, nullable) NSString *currentLuaPage;
+/// 首个布局完成是否已向 Lua 派发 onLayout（游标等依赖真实 frame 的定位需在布局后执行）。
+@property (nonatomic, assign) BOOL didDispatchOnLayout;
 @end
 
 @implementation PLUIShellViewController
@@ -45,13 +54,25 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
+    // 先初始化版本/账号数据源：buildShell 阶段 Lua 页会通过 launcher.service
+    // 拉取版本列表，必须保证列表在 buildTree 前已就绪（否则首次构建为空）。
+    [self initializeVersionLists];
     [self buildShell];
     [self registerNotifications];
-    [self initializeVersionLists];
 }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// 首个真实布局完成后通知 Lua（onLayout）：游标等依赖实际 frame 的定位需在布局后执行，
+// onReady 在 buildShell 期间已派发，彼时 frame 尚未就绪，故在此补发一次。
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (self.didDispatchOnLayout) return;
+    if (!self.runtime) return;
+    self.didDispatchOnLayout = YES;
+    [self.runtime dispatchEvent:@"onLayout" arguments:@[]];
 }
 
 #pragma mark - 材质包加载与渲染
@@ -73,12 +94,25 @@
             return;
         }
 
+        // 主题数据源切到激活 UI 包：$color: 令牌严格按包 colors.json 解析（黑底根治）。
+        [PLThemeManager.sharedManager loadColorsFromRoot:pack.rootPath];
+
         NSDictionary *tree = nil;
         NSString *source = [PLUIPackManager.sharedManager mainLuaSourceForPack:pack];
         if (source) {
             NSError *error = nil;
             PLLuaRuntime *runtime = [[PLLuaRuntime alloc] initWithPack:pack scriptSource:source error:&error];
             if (runtime) {
+                // 首块状态在 buildTree 前注入：让 build() 能读取 launcher.state.settings
+                // 等数据驱动清单，动态生成设置页条目（启动器新增条目无需改 UI 包）。
+                [runtime setState:@{ @"settings": [self launcherSettingsList] }];
+                // build() 阶段就会调用 launcher.service(version/account) 拉取列表，
+                // 因此服务分发必须在 buildTree 之前接好（否则首次构建列表为空）。
+                __weak typeof(self) weakSelf = self;
+                runtime.serviceHandler = ^NSDictionary *(NSString *service, NSString *method, NSDictionary *args) {
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    return [strongSelf handleLuaService:service method:method args:args];
+                };
                 tree = [runtime buildTreeWithError:&error];
                 if (tree) self.runtime = runtime;
             }
@@ -159,34 +193,398 @@
         } else if ([command isEqualToString:@"setStyle"]) {
             // 样式热更新（PCL2 顶栏页签选中态药丸）：background/tint/border/corner
             [node updateStyleSpec:[argument isKindOfClass:NSDictionary.class] ? argument : nil];
+        } else if ([command isEqualToString:@"setFrame"]) {
+            // 绝对定位覆盖层（页签滑动高亮游标）：argument = { rect, animated }
+            NSDictionary *payload = (NSDictionary *)argument;
+            NSDictionary *rect = payload[@"rect"];
+            BOOL animated = [payload[@"animated"] boolValue];
+            if ([rect isKindOfClass:NSDictionary.class]) {
+                [node updateFrameRect:rect animated:animated];
+            }
         }
         return YES;
+    };
+    self.runtime.viewFrameHandler = ^NSDictionary *(NSString *viewId) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        PLUINodeView *node = [strongSelf.engine viewForId:viewId];
+        return node ? [node currentFrameRect] : nil;
     };
     self.runtime.viewTextHandler = ^NSString *(NSString *viewId) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         return [strongSelf.engine viewForId:viewId].currentText;
     };
-    // launcher.call RPC：数据面分发（版本清单/下载分类/联机房间/设置读写）
-    self.runtime.callHandler = ^id(NSString *name, id args) {
+// launcher.service：由宿主统一分发到各服务（settings/version/account/system/download）。
+    self.runtime.serviceHandler = ^NSDictionary *(NSString *service, NSString *method, NSDictionary *args) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        return [strongSelf handleLuaCall:name args:args];
+        return [strongSelf handleLuaService:service method:method args:args];
     };
+    // launcher.emit：广播给宿主，供其他监听方（壳/游戏窗口等）响应。
+    self.runtime.emitHandler = ^(NSString *event, id payload) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"PLUIServiceEmit"
+                          object:event
+                        userInfo:(payload ? @{@"payload": payload} : nil)];
+    };
+    // launcher.getState：拉取当前完整状态快照。
+    self.runtime.stateHandler = ^NSDictionary *(void) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        return [strongSelf currentState];
+    };
+}
+
+#pragma mark - WS-B 服务分发（launcher.service 落点，宿主拥有数据/能力）
+
+- (NSDictionary *)handleLuaService:(NSString *)service
+                            method:(NSString *)method
+                              args:(NSDictionary *)args {
+    // 未知服务/方法：返回 ok=NO（干净降级，不抛 Lua 错误）。
+    if ([service isEqualToString:@"settings"] && [method isEqualToString:@"list"]) {
+        return @{ @"ok": @YES, @"count": @([self launcherSettingsList].count),
+                  @"items": [self launcherSettingsList] };
+    }
+    if ([service isEqualToString:@"version"] && [method isEqualToString:@"current"]) {
+        return @{ @"ok": @YES, @"name": PLProfiles.current.selectedProfileName ?: @"" };
+    }
+    if ([service isEqualToString:@"version"] && [method isEqualToString:@"list"]) {
+        // 本地已安装版本（结构式：id + 类型占位，动态数据由磁盘填充）
+        NSMutableArray *items = [NSMutableArray new];
+        for (NSDictionary *v in self.localVersionList) {
+            BOOL selected = [v[@"id"] isEqualToString:PLProfiles.current.selectedProfileName];
+            [items addObject:@{ @"id": v[@"id"] ?: @"", @"type": v[@"type"] ?: @"custom",
+                                @"selected": @(selected) }];
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"current"]) {
+        BaseAuthenticator *auth = BaseAuthenticator.current;
+        NSString *name = auth.authData[@"username"];
+        return name ? @{ @"ok": @YES, @"name": name } : @{ @"ok": @NO };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"list"]) {
+        // 已保存账号：扫描 POJAV_HOME/accounts/*.json（结构式：id + username + selected）
+        NSMutableArray *items = [NSMutableArray new];
+        NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:listPath error:nil];
+        BaseAuthenticator *auth = BaseAuthenticator.current;
+        NSString *currentId = auth.authData[@"accountId"];
+        for (NSString *file in files) {
+            if ([file hasSuffix:@".json"]) {
+                NSDictionary *acc = parseJSONFromFile([listPath stringByAppendingPathComponent:file]);
+                if (![acc isKindOfClass:NSDictionary.class]) continue;
+                NSString *aid = acc[@"accountId"] ?: acc[@"username"] ?: @"";
+                // 分类：按 json 特征判定（离线=无有效期；微软/第三方按 clientToken），供 UI 包「离线/正版」过滤。
+                NSNumber *exp = acc[@"expiresAt"];
+                NSString *type;
+                if ([exp longValue] == 0) type = @"offline";
+                else type = (acc[@"clientToken"] != nil) ? @"thirdparty" : @"microsoft";
+                [items addObject:@{
+                    @"id": aid,
+                    @"username": acc[@"username"] ?: @"",
+                    @"type": type,
+                    @"selected": [aid isEqualToString:currentId] ? @YES : @NO,
+                }];
+            }
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"select"]) {
+        // 切换当前账号：args.id = 已存账号的 accountId，加载并设为 current（复用 loadSavedName，路径同为 Documents/accounts）。
+        NSString *aid = args[@"id"];
+        if (![aid isKindOfClass:NSString.class] || aid.length == 0) return @{ @"ok": @NO };
+        NSString *path = [NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), aid];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return @{ @"ok": @NO };
+        BaseAuthenticator *auth = [BaseAuthenticator loadSavedName:aid];
+        if (!auth) return @{ @"ok": @NO };
+        setPrefObject(@"internal.selected_account", aid);
+        [self accountInfoChanged];
+        NSString *name = auth.authData[@"username"] ?: @"";
+        return @{ @"ok": @YES, @"name": name };
+    }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"list"]) {
+        // 版本独立设置的读写读写：返回当前 profile 各字段真实值（未设置为默认）。
+        NSDictionary *prof = PLProfiles.current.selectedProfile ?: @{};
+        NSArray *keys = @[@"versionIsolation", @"windowTitle", @"windowInfo",
+                          @"javaVersion", @"ramType", @"ram", @"ramOptimize", @"serverIp", @"loginMode"];
+        NSDictionary *defs = @{
+            @"versionIsolation": @"开启",
+            @"windowTitle": @"",
+            @"windowInfo": @"",
+            @"javaVersion": @"自动选择",
+            @"ramType": @"自动配置",
+            @"ram": @"",
+            @"ramOptimize": @"跟随全局设置",
+            @"serverIp": @"",
+            @"loginMode": @"正版登录或离线登录",
+        };
+        NSMutableArray *items = [NSMutableArray new];
+        for (NSString *k in keys) {
+            id v = prof[k];
+            if (![v isKindOfClass:NSString.class]) v = defs[k] ?: @"";
+            [items addObject:@{ @"key": k, @"value": v ?: @"" }];
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"set"]) {
+        // 写入当前 profile 的版本独立设置（白名单 key，存 launcher_profiles.json 的 profiles.<name>）。
+        static NSSet<NSString *> *allowed = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            allowed = [NSSet setWithArray:@[@"versionIsolation", @"windowTitle", @"windowInfo",
+                                            @"javaVersion", @"ramType", @"ram", @"ramOptimize", @"serverIp", @"loginMode"]];
+        });
+        NSString *k = args[@"key"];
+        id rawV = args[@"value"];
+        if (![k isKindOfClass:NSString.class] || ![allowed containsObject:k]) return @{ @"ok": @NO };
+        NSString *v = [rawV isKindOfClass:NSString.class] ? rawV : @"";
+        PLProfiles *p = PLProfiles.current;
+        NSString *name = p.selectedProfileName;
+        if (name.length == 0) return @{ @"ok": @NO };
+        NSMutableDictionary *profile = [[p.profiles objectForKey:name] mutableCopy] ?: [NSMutableDictionary new];
+        profile[k] = v;
+        [p saveProfile:profile withName:name];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"instance"] && [method isEqualToString:@"list"]) {
+        // 版本选择界面右侧目录：直接渲染 /Documents/instances 下所有文件夹（default 为根目录内置，不列入）。
+        NSMutableArray *items = [NSMutableArray new];
+        NSString *instPath = [NSString stringWithFormat:@"%s/instances", getenv("POJAV_HOME")];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:instPath error:nil];
+        NSString *current = getPrefObject(@"general.game_directory") ?: @"default";
+        for (NSString *file in files) {
+            BOOL isDir = NO;
+            if (![NSFileManager.defaultManager fileExistsAtPath:[instPath stringByAppendingPathComponent:file] isDirectory:&isDir]) continue;
+            if (!isDir || [file isEqualToString:@"default"]) continue;
+            [items addObject:@{
+                @"id": file,
+                @"name": file,
+                @"path": [instPath stringByAppendingPathComponent:file],
+                @"selected": [file isEqualToString:current] ? @YES : @NO,
+            }];
+        }
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"gameDir"] && [method isEqualToString:@"list"]) {
+        // 已配置游戏目录：default 常驻 + POJAV_HOME/instances 下的子目录（结构式）。
+        NSMutableArray *items = [NSMutableArray new];
+        [items addObject:@{ @"id": @"default", @"name": @"default", @"selected": @NO }];
+        NSString *instancesPath = [NSString stringWithFormat:@"%s/instances", getenv("POJAV_HOME")];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:instancesPath error:nil];
+        NSString *current = getPrefObject(@"general.game_directory") ?: @"default";
+        BOOL found = NO;
+        for (NSString *file in files) {
+            BOOL isDir = NO;
+            if (![NSFileManager.defaultManager fileExistsAtPath:[instancesPath stringByAppendingPathComponent:file] isDirectory:&isDir]) continue;
+            if (!isDir || [file isEqualToString:@"default"]) continue;
+            BOOL sel = [file isEqualToString:current];
+            if (sel) found = YES;
+            [items addObject:@{ @"id": file, @"name": file, @"selected": @(sel) }];
+        }
+        items[0] = @{ @"id": @"default", @"name": @"default", @"selected": @(!found) };
+        return @{ @"ok": @YES, @"items": items };
+    }
+    if ([service isEqualToString:@"gameDir"] && [method isEqualToString:@"set"]) {
+        NSString *name = args[@"name"];
+        if (![name isKindOfClass:NSString.class] || name.length == 0) return @{ @"ok": @NO };
+        NSArray *list = [self handleLuaService:@"gameDir" method:@"list" args:@{}][@"items"];
+        BOOL exists = NO;
+        for (NSDictionary *it in list) if ([it[@"id"] isEqualToString:name]) { exists = YES; break; }
+        if (!exists) return @{ @"ok": @NO, @"error": @"not found" };
+        [self setGameDirectory:name];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"gameDir"] && [method isEqualToString:@"new"]) {
+        // 新建游戏目录：在 POJAV_HOME/instances 下创建 <name> 目录并切换（镜像原生页脚逻辑）
+        NSString *name = args[@"name"];
+        if (![name isKindOfClass:NSString.class] || name.length == 0) return @{ @"ok": @NO };
+        NSString *dest = [NSString stringWithFormat:@"%s/instances/%@", getenv("POJAV_HOME"), name];
+        NSError *error = nil;
+        [NSFileManager.defaultManager createDirectoryAtPath:dest
+                              withIntermediateDirectories:NO
+                                              attributes:nil
+                                                   error:&error];
+        if (error != nil) {
+            return @{ @"ok": @NO, @"error": error.localizedDescription ?: @"create failed" };
+        }
+        [self setGameDirectory:name];
+        return @{ @"ok": @YES };
+    }
+    // ---- 资源中心（Mods）服务：list 同步返回缓存 / refresh 异步扫描后 emit 刷新 ----
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"list"]) {
+        if (self.modsCache.count == 0) [self restartModsScan];
+        return @{ @"ok": @YES, @"profile": PLProfiles.current.selectedProfileName ?: @"",
+                  @"items": self.modsCache ?: @[] };
+    }
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"refresh"]) {
+        [self restartModsScan];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"toggle"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.modsCache && idx < self.modsCache.count) {
+            NSDictionary *item = self.modsCache[idx];
+            ModItem *mod = [ModItem new];
+            mod.fileName = item[@"fileName"];
+            mod.filePath = item[@"filePath"];
+            mod.disabled = [item[@"enabled"] boolValue] == NO;
+            NSError *err = nil;
+            BOOL ok = [[ModService sharedService] toggleEnableForMod:mod error:&err];
+            [self restartModsScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"mods"] && [method isEqualToString:@"delete"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.modsCache && idx < self.modsCache.count) {
+            NSDictionary *item = self.modsCache[idx];
+            ModItem *mod = [ModItem new];
+            mod.fileName = item[@"fileName"];
+            mod.filePath = item[@"filePath"];
+            NSError *err = nil;
+            BOOL ok = [[ModService sharedService] deleteMod:mod error:&err];
+            [self restartModsScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    // ---- 光影包（Shaders）服务：与 mods 同构（ShaderService 扫描 shaderpacks，.zip/.zip.disabled 启停）----
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"list"]) {
+        if (self.shadersCache.count == 0) [self restartShadersScan];
+        return @{ @"ok": @YES, @"profile": PLProfiles.current.selectedProfileName ?: @"",
+                  @"items": self.shadersCache ?: @[] };
+    }
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"refresh"]) {
+        [self restartShadersScan];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"toggle"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.shadersCache && idx < self.shadersCache.count) {
+            NSDictionary *item = self.shadersCache[idx];
+            ShaderItem *sh = [ShaderItem new];
+            sh.fileName = item[@"fileName"];
+            sh.filePath = item[@"filePath"];
+            sh.disabled = [item[@"enabled"] boolValue] == NO;
+            NSError *err = nil;
+            BOOL ok = [[ShaderService sharedService] toggleEnableForShader:sh error:&err];
+            [self restartShadersScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"delete"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.shadersCache && idx < self.shadersCache.count) {
+            NSDictionary *item = self.shadersCache[idx];
+            ShaderItem *sh = [ShaderItem new];
+            sh.fileName = item[@"fileName"];
+            sh.filePath = item[@"filePath"];
+            NSError *err = nil;
+            BOOL ok = [[ShaderService sharedService] deleteShader:sh error:&err];
+            [self restartShadersScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
+        // 仅描述结构：动态值由设备/运行时填充，不写死。
+        return @{ @"ok": @YES,
+                  @"os": [UIDevice currentDevice].systemName ?: @"",
+                  @"systemVersion": [UIDevice currentDevice].systemVersion ?: @"",
+                  @"model": [UIDevice currentDevice].model ?: @"" };
+    }
+    if ([service isEqualToString:@"storage"] && [method isEqualToString:@"summary"]) {
+        return @{ @"ok": @YES, @"summary": @"" };
+    }
+    // 下载进度等异步服务：返回占位结构，真实实现由服务类异步回调后 emit 刷新。
+    if ([service isEqualToString:@"download"] && [method isEqualToString:@"summary"]) {
+        return @{ @"ok": @YES, @"activity": @0, @"downloaded": @0, @"total": @0 };
+    }
+    NSLog(@"[PLUIShell] unknown lua service %@.%@", service, method);
+    return @{ @"ok": @NO };
 }
 
 - (void)showInitialPage {
     if (!self.contentNode) return;
-    NSString *page = self.contentNode.initialPage;
-    if ([page isEqualToString:@"download"]) {
+    // 完全数据驱动：content 节点渲染 Lua 页子树，页 token 由 UI 包配置（pages 表）解析。
+    NSString *token = self.contentNode.initialPage ?: @"home";
+    NSString *pageId = [self.contentNode pageIdForToken:token];
+    BOOL hasLuaPage = NO;
+    for (PLUINodeView *p in self.contentNode.contentPages) {
+        if (p.nodeId && [p.nodeId isEqualToString:pageId]) { hasLuaPage = YES; break; }
+    }
+    if (hasLuaPage) {
+        [self.contentNode showLuaPage:pageId animated:NO];
+        [self dispatchLuaPageChange:token];
+        return;
+    }
+    // 原生 VC 降级路径（仅供未 Lua 化的功能页过渡，后续随服务化移除）。
+    if ([token isEqualToString:@"download"]) {
         [self showDownloadPage];
-    } else if ([page isEqualToString:@"versionManager"]) {
-        [self showVersionManager];
-    } else if ([page isEqualToString:@"settings"]) {
-        [self showSettings];
-    } else if ([page isEqualToString:@"ai"]) {
+    } else if ([token isEqualToString:@"ai"]) {
         [self showAIPage];
     } else {
         [self showHomePage];
     }
+}
+
+- (void)dispatchLuaPageChange:(NSString *)token {
+    self.currentLuaPage = token;
+    [self.runtime dispatchEvent:@"onPageChange" arguments:@[token ?: @""]];
+}
+
+- (void)pluiHandleNavigate:(NSNotification *)n {
+    NSString *token = [n.object isKindOfClass:NSString.class] ? n.object : @"home";
+    if (!self.contentNode) return;
+    NSString *pageId = [self.contentNode pageIdForToken:token];
+    BOOL hasLuaPage = NO;
+    for (PLUINodeView *p in self.contentNode.contentPages) {
+        if (p.nodeId && [p.nodeId isEqualToString:pageId]) { hasLuaPage = YES; break; }
+    }
+    if (hasLuaPage) {
+        [self.contentNode showLuaPage:pageId animated:YES];
+        [self dispatchLuaPageChange:token];
+        return;
+    }
+    // 非 Lua 页 token 回退到原生 VC 加载。
+    if ([token isEqualToString:@"settings"])            [self showSettings];
+    else if ([token isEqualToString:@"ai"])             [self showAIPage];
+    else if ([token isEqualToString:@"mods"])           [self showModsManager];
+    else if ([token isEqualToString:@"shaders"])        [self showShadersManager];
+    else if ([token isEqualToString:@"modpackImport"])  [self showModpackImport];
+    else if ([token isEqualToString:@"gameDirectory"])  [self showGameDirectory];
+    else if ([token isEqualToString:@"profileEditor"])  [self showProfileEditor:nil];
+}
+
+- (void)pluiHandleOpenSubpage:(NSNotification *)n {
+    NSString *token = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    // 次级页 = 内容区内的 Lua 页子树：token 若已注册（CONFIG.pages），直接走
+    // 与 navigate 相同的切页管线（showLuaPage + onPageChange），引擎零子页特例。
+    if (self.contentNode) {
+        NSString *pageId = [self.contentNode pageIdForToken:token];
+        BOOL hasLuaPage = NO;
+        for (PLUINodeView *p in self.contentNode.contentPages) {
+            if (p.nodeId && [p.nodeId isEqualToString:pageId]) { hasLuaPage = YES; break; }
+        }
+        if (hasLuaPage) {
+            [self.contentNode showLuaPage:pageId animated:YES];
+            [self dispatchLuaPageChange:token];
+            return;
+        }
+    }
+    // 无 Lua 次级页的令牌：回退派发给 Lua 包（onOpenSubpage），由包决定如何处理。
+    [self.runtime dispatchEvent:@"onOpenSubpage" arguments:@[token]];
+}
+
+- (void)pluiHandleSwitchTab:(NSNotification *)n {
+    NSString *key = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onSwitchTab" arguments:@[key]];
+}
+
+- (void)pluiHandleSubmit:(NSNotification *)n {
+    NSString *formId = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onSubmit" arguments:@[formId]];
+}
+
+- (void)pluiHandleService:(NSNotification *)n {
+    NSString *name = [n.object isKindOfClass:NSString.class] ? n.object : @"";
+    [self.runtime dispatchEvent:@"onService" arguments:@[name]];
 }
 
 - (void)refreshStateAndNotifyReady {
@@ -205,73 +603,25 @@
         @"servers": [self serverStateList],
         @"darkMode": @(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark),
         @"locale": [NSLocale currentLocale].localeIdentifier ?: @"",
+        @"settings": [self launcherSettingsList],
     };
 }
 
-/// 本地已安装的版本档案清单（{id,type}），供启动页版本展示 / 更多页版本行。
-- (NSArray<NSDictionary *> *)profileStateList {
-    NSMutableArray *list = [NSMutableArray array];
-    for (NSDictionary *v in self.localVersionList) {
-        if ([v isKindOfClass:NSDictionary.class] && [v[@"id"] isKindOfClass:NSString.class]) {
-            [list addObject:@{ @"id": v[@"id"], @"type": v[@"type"] ?: @"installed" }];
-        }
-    }
-    return list;
-}
-
-/// 已保存联机房间（{name,onwer,networkId,hostIP,mode}），供联机页列表展示。
-- (NSArray<NSDictionary *> *)serverStateList {
-    NSMutableArray *list = [NSMutableArray array];
-    MultiplayerManager *mpm = [MultiplayerManager sharedManager];
-    for (MultiplayerRoom *room in mpm.savedRooms) {
-        if (![room isKindOfClass:MultiplayerRoom.class]) continue;
-        [list addObject:@{
-            @"name": room.name ?: @"",
-            @"owner": room.ownerName ?: @"",
-            @"networkId": room.networkId ?: @"",
-            @"hostIP": room.hostIP ?: @"",
-            @"hostPort": room.hostPort ?: @"",
-            @"mode": (room.role == MultiplayerRoomRoleHost) ? @"host" : @"guest",
-        }];
-    }
-    return list;
-}
-
-/// launcher.call 数据面 RPC（表驱动；未知调用返回 nil，绝不做动态 selector）。
-- (id)handleLuaCall:(NSString *)name args:(id)args {
-    if (![name isKindOfClass:NSString.class] || name.length == 0) return nil;
-
-    if ([name isEqualToString:@"versions"]) {
-        return [self profileStateList];
-    }
-    if ([name isEqualToString:@"servers"]) {
-        return [self serverStateList];
-    }
-    if ([name isEqualToString:@"selectedVersion"]) {
-        NSString *nameStr = PLProfiles.current.selectedProfileName ?: @"";
-        return nameStr.length > 0 ? @{@"name": nameStr} : [NSNull null];
-    }
-    if ([name isEqualToString:@"account"]) {
-        BaseAuthenticator *auth = BaseAuthenticator.current;
-        NSString *username = auth.authData[@"username"];
-        return username ? @{@"name": username} : [NSNull null];
-    }
-    if ([name isEqualToString:@"settings"]) {
-        // 约定：{key=..., value?=...} —— 有 value 则写并返回 YES，否则读返回当前值。
-        if ([args isKindOfClass:NSDictionary.class]) {
-            NSDictionary *d = (NSDictionary *)args;
-            NSString *key = [d[@"key"] isKindOfClass:NSString.class] ? d[@"key"] : nil;
-            if (key && key.length > 0) {
-                if (d[@"value"] && ![d[@"value"] isEqual:[NSNull null]]) {
-                    setPrefObject(key, d[@"value"]);
-                    return @YES;
-                }
-                id value = getPrefObject(key);
-                return value ?: [NSNull null];
-            }
-        }
-    }
-    return nil;
+// 设置列表数据源（启动器拥有）：由 launcher.state.settings 提供给 UI 包渲染。
+// 启动器在此新增条目即可，UI 包无需改动 —— 引擎只提供数据，包只做渲染。
+- (NSArray<NSDictionary *> *)launcherSettingsList {
+    // 顺序即展示顺序；desc 非空时包会在卡片下方渲染灰色说明小字。
+    // 无 desc 传空串（保证 JSON/字典字段结构一致，包端按结构读取）。
+    return @[
+        @{ @"label": @"启动器设置",   @"icon": @"sf:slider.horizontal.3",        @"desc": @"",                 @"action": @"open_subpage:launcher_settings" },
+        @{ @"label": @"下载镜像策略", @"icon": @"sf:arrow.down.circle.fill",     @"desc": @"",                 @"action": @"open_subpage:download_mirror" },
+        @{ @"label": @"视频设置",     @"icon": @"sf:display",                    @"desc": @"最大分辨率、垂直同步与渲染占比等显示选项。", @"action": @"open_subpage:video_settings" },
+        @{ @"label": @"MobileGlues 渲染器", @"icon": @"sf:memorychip.fill",      @"desc": @"选择 OpenGL 兼容层，可能影响画面表现与性能。", @"action": @"open_subpage:gl_renderer" },
+        @{ @"label": @"自定义控制键", @"icon": @"sf:keyboard.fill",              @"desc": @"",                 @"action": @"open_subpage:control_keys" },
+        @{ @"label": @"Java 调整",    @"icon": @"sf:wrench.and.screwdriver.fill",@"desc": @"",                 @"action": @"open_subpage:java_tuning" },
+        @{ @"label": @"UI 设置",      @"icon": @"sf:paintbrush.fill",            @"desc": @"界面缩放与视觉效果，可导入主题材质包调整外观。", @"action": @"open_subpage:ui_theme" },
+        @{ @"label": @"AI 助手",      @"icon": @"sf:sparkles",                   @"desc": @"",                 @"action": @"open_subpage:ai_assistant" },
+    ];
 }
 
 #pragma mark - 通知注册（与旧壳相同的 13 个 Show* + 状态源）
@@ -303,6 +653,13 @@
     on(@"FindVersionInRemoteList", @selector(findVersionInRemoteList:));
     on(@"UpdateAccountInfo", @selector(accountInfoChanged));
     on(PLThemeDidChangeNotification, @selector(themeDidChange));
+
+    // 引擎通用五类动作（PLUIActionRouter 前缀解析后转发）：全部经 Lua / 内容区直渲分发。
+    on(@"PLUIActionNavigate", @selector(pluiHandleNavigate:));
+    on(@"PLUIActionOpenSubpage", @selector(pluiHandleOpenSubpage:));
+    on(@"PLUIActionSwitchTab", @selector(pluiHandleSwitchTab:));
+    on(@"PLUIActionSubmit", @selector(pluiHandleSubmit:));
+    on(@"PLUIActionService", @selector(pluiHandleService:));
 }
 
 - (void)accountInfoChanged {
@@ -512,6 +869,96 @@
     [self setContentViewController:nav animated:YES];
 }
 
+// Lua 服务落点：切换游戏目录（镜像 LauncherPrefGameDirViewController.changeSelectionTo:）
+- (void)setGameDirectory:(NSString *)name {
+    if (getenv("DEMO_LOCK")) return;
+    setPrefObject(@"general.game_directory", name);
+    NSString *multidirPath = [NSString stringWithFormat:@"%s/instances/%@", getenv("POJAV_HOME"), name];
+    NSString *lasmPath = @(getenv("POJAV_GAME_DIR"));
+    NSError *removeError = nil;
+    [NSFileManager.defaultManager removeItemAtPath:lasmPath error:&removeError];
+    NSError *linkError = nil;
+    BOOL linkOK = [NSFileManager.defaultManager createSymbolicLinkAtPath:lasmPath
+                                                       withDestinationPath:multidirPath
+                                                                     error:&linkError];
+    if (!linkOK) {
+        NSLog(@"[GameDir] createSymbolicLink failed: %@", linkError.localizedDescription);
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:localize(@"Error", nil)
+                              message:[NSString stringWithFormat:localize(@"i18n_str_363", nil), linkError.localizedDescription]
+                       preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil)
+                                                  style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    [NSFileManager.defaultManager changeCurrentDirectoryPath:lasmPath];
+    toggleIsolatedPref(NO);
+    [PLProfiles updateCurrent];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SelectedProfileChanged" object:nil];
+}
+
+// 资源中心（Mods）异步扫描：ModService 扫描当前版本 mods/，结构化为缓存并推送 Lua。
+- (void)restartModsScan {
+    NSString *profile = PLProfiles.current.selectedProfileName;
+    __weak typeof(self) weakSelf = self;
+    [[ModService sharedService] scanModsForProfile:profile completion:^(NSArray<ModItem *> *mods) {
+        NSMutableArray *items = [NSMutableArray new];
+        [mods enumerateObjectsUsingBlock:^(ModItem *m, NSUInteger i, BOOL *stop) {
+            NSString *name = m.displayName.length > 0 ? m.displayName : m.fileName;
+            [items addObject:@{
+                @"name": name ?: @"",
+                @"fileName": m.fileName ?: @"",
+                @"filePath": m.filePath ?: @"",
+                @"enabled": @(!m.disabled),
+                @"author": m.author ?: @"",
+                @"gameVersion": m.gameVersion ?: @"",
+            }];
+        }];
+        // Lua 状态单线程访问：合并更新 + 事件必须回到主线程。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.modsCache = items;
+            if (strongSelf.runtime) {
+                [strongSelf.runtime dispatchEvent:@"onModsUpdated"
+                                        arguments:@[@{ @"ok": @YES, @"items": items }]];
+            }
+        });
+    }];
+}
+
+// 光影包（Shaders）异步扫描：ShaderService 扫描当前版本 shaderpacks/，结构化为缓存并推送 Lua。
+- (void)restartShadersScan {
+    NSString *profile = PLProfiles.current.selectedProfileName;
+    __weak typeof(self) weakSelf = self;
+    [[ShaderService sharedService] scanShadersForProfile:profile completion:^(NSArray<ShaderItem *> *shaders) {
+        NSMutableArray *items = [NSMutableArray new];
+        [shaders enumerateObjectsUsingBlock:^(ShaderItem *s, NSUInteger i, BOOL *stop) {
+            NSString *name = s.displayName.length > 0 ? s.displayName : s.fileName;
+            [items addObject:@{
+                @"name": name ?: @"",
+                @"fileName": s.fileName ?: @"",
+                @"filePath": s.filePath ?: @"",
+                @"enabled": @(!s.disabled),
+                @"author": s.author ?: @"",
+                @"gameVersion": s.gameVersion ?: @"",
+            }];
+        }];
+        // Lua 状态单线程访问：合并更新 + 事件必须回到主线程。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.shadersCache = items;
+            if (strongSelf.runtime) {
+                [strongSelf.runtime dispatchEvent:@"onShadersUpdated"
+                                        arguments:@[@{ @"ok": @YES, @"items": items }]];
+            }
+        });
+    }];
+}
+
 - (void)showModpackImport {
     DownloadViewController *d = [[DownloadViewController alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:d];
@@ -547,9 +994,10 @@
 /// 无壁纸：铺不透明主题底色，半透明包色叠加其上呈现正常浅色观感。
 - (void)refreshShellBackdrop {
     BackgroundManager *background = [BackgroundManager sharedManager];
-    self.view.backgroundColor = background.hasBackground
-        ? [UIColor clearColor]
-        : [PLThemeManager.sharedManager colorForToken:@"background" fallback:UIColor.systemBackgroundColor];
+    // 兜底必须是浅色（仿 PCL：浅蓝灰 #E3EEF9）。禁止黑色/深灰/透明兜底。
+    UIColor *fallbackLight = [PLThemeManager.sharedManager colorFromHex:@"#E3EEF9"];
+    UIColor *base = [PLThemeManager.sharedManager colorForToken:@"background" fallback:fallbackLight] ?: fallbackLight;
+    self.view.backgroundColor = background.hasBackground ? [UIColor clearColor] : base;
 }
 
 - (void)uiEffectChanged:(NSNotification *)notification {
@@ -808,7 +1256,7 @@ static UIImage *PLUIWelcomeAppIcon(void) {
 
 - (void)buildWelcomeView {
     PLThemeManager *theme = PLThemeManager.sharedManager;
-    UIColor *background = [theme colorForToken:@"background" fallback:UIColor.systemBackgroundColor];
+    UIColor *background = [theme colorForToken:@"background" fallback:[theme colorFromHex:@"#E3EEF9"] ?: UIColor.whiteColor];
     UIColor *accent = [theme colorForToken:@"accent" fallback:UIColor.systemBlueColor];
     UIColor *surface = [theme colorForToken:@"surface" fallback:UIColor.secondarySystemBackgroundColor];
     UIColor *textPrimary = [theme colorForToken:@"textPrimary" fallback:UIColor.labelColor];

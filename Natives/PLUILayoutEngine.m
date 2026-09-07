@@ -32,7 +32,10 @@ static BOOL PLUILayoutValidateNode(NSDictionary *node, NSInteger depth,
 static void PLUIEnumerateNode(PLUINodeView *node, void (^block)(PLUINodeView *node)) {
     if (!node) return;
     block(node);
-    for (UIView *sub in node.subviews) {
+    // 页面子树可能挂在内容滚动容器（contentScrollView）内，需一并递归，否则
+    // viewForId / 交互 wiring / nodeCount 无法触及内容区任意节点。
+    UIView *holder = [node isContentArea] ? (node.contentScrollView ?: node) : nil;
+    for (UIView *sub in holder ? holder.subviews : node.subviews) {
         if ([sub isKindOfClass:PLUINodeView.class]) {
             PLUIEnumerateNode((PLUINodeView *)sub, block);
         }

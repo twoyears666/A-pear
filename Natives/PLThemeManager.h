@@ -37,6 +37,10 @@ FOUNDATION_EXPORT NSString * const PLDefaultThemeIdentifier;
 /// 供 PLUIPackManager 等复用同一套包定位规则。
 - (nullable NSString *)rootForIdentifier:(NSString *)identifier;
 
+/// 直接从外部 UI 包根路径加载 colors.json 作为主题数据源（$color: 令牌按包解析）。
+/// 返回 YES 表示成功应用；找不到 colors.json 或文件无效返回 NO，不改变当前主题。
+- (BOOL)loadColorsFromRoot:(NSString *)root;
+
 @end
 
 NS_ASSUME_NONNULL_END

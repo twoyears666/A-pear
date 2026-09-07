@@ -67,6 +67,19 @@ NS_ASSUME_NONNULL_BEGIN
 /// 页面淡入淡出（alpha 过渡）；duration<=0 退化为 updateVisible:。
 /// 隐藏节点仍在栈布局中坍缩，页码切换复用隐藏坍缩 + 淡入淡出语义。
 - (void)fadeToVisible:(BOOL)visible duration:(NSTimeInterval)duration;
+/// 内容区（完全数据驱动）：直接 Lua 页子树列表与页间切换（淡入淡出）。
+@property (nonatomic, readonly) NSArray<PLUINodeView *> *contentPages;
+/// content 节点的纵向滚动容器（通用滚动；页面子树挂其内；nil = 非 content 节点）。
+@property (nonatomic, readonly, nullable) UIScrollView *contentScrollView;
+- (void)showLuaPage:(nullable NSString *)pageId animated:(BOOL)animated;
+- (nullable NSString *)currentContentPage;
+/// page token → Lua 页子树 id（未命中则视为子树 id 本身）。
+- (nullable NSString *)pageIdForToken:(NSString *)token;
+
+/// 绝对定位覆盖层（launcher.view(id):setFrame / getFrame 的落点）：
+/// 用于顶栏页签白色高亮游标随选中平滑滑动。rect = {x,y,w,h}（相对父容器，pt）。
+- (void)updateFrameRect:(nullable NSDictionary *)rect animated:(BOOL)animated;
+- (NSDictionary *)currentFrameRect;
 
 @end
 
