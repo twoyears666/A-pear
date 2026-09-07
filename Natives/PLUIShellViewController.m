@@ -635,6 +635,34 @@
 
 // 设置列表数据源（启动器拥有）：由 launcher.state.settings 提供给 UI 包渲染。
 // 启动器在此新增条目即可，UI 包无需改动 —— 引擎只提供数据，包只做渲染。
+- (NSArray<NSDictionary *> *)profileStateList {
+    NSMutableArray *list = [NSMutableArray array];
+    for (NSDictionary *v in self.localVersionList) {
+        if ([v isKindOfClass:NSDictionary.class] && [v[@"id"] isKindOfClass:NSString.class]) {
+            [list addObject:@{ @"id": v[@"id"], @"type": v[@"type"] ?: @"installed" }];
+        }
+    }
+    return list;
+}
+
+// 已保存联机房间（{name,onwer,networkId,hostIP,mode}），供联机页列表展示。
+- (NSArray<NSDictionary *> *)serverStateList {
+    NSMutableArray *list = [NSMutableArray array];
+    MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+    for (MultiplayerRoom *room in mpm.savedRooms) {
+        if (![room isKindOfClass:MultiplayerRoom.class]) continue;
+        [list addObject:@{
+            @"name": room.name ?: @"",
+            @"owner": room.ownerName ?: @"",
+            @"networkId": room.networkId ?: @"",
+            @"hostIP": room.hostIP ?: @"",
+            @"hostPort": room.hostPort ?: @"",
+            @"mode": (room.role == MultiplayerRoomRoleHost) ? @"host" : @"guest",
+        }];
+    }
+    return list;
+}
+
 - (NSArray<NSDictionary *> *)launcherSettingsList {
     // 顺序即展示顺序；desc 非空时包会在卡片下方渲染灰色说明小字。
     // 无 desc 传空串（保证 JSON/字典字段结构一致，包端按结构读取）。
