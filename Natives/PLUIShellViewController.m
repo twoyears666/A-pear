@@ -17,6 +17,7 @@
 #import "LauncherPreferencesViewController.h"
 #import "ModsManagerViewController.h"
 #import "ModService.h"
+#import "ShaderService.h"
 #import "ModItem.h"
 #import "ShadersManagerViewController.h"
 #import "ModpackImportViewController.h"
@@ -39,6 +40,8 @@
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *remoteVersionList;
 /// 资源中心（Mods）缓存：ModService 扫描结果的 Lua 可渲染结构；refresh 后派发 onModsUpdated。
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *modsCache;
+/// 光影包（Shaders）缓存：ShaderService 扫描结果的 Lua 可渲染结构；refresh 后派发 onShadersUpdated。
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *shadersCache;
 /// 当前内容页标识（home/download/settings/...），变化时向 Lua 包派发 onPageChange
 @property (nonatomic, copy, nullable) NSString *currentLuaPage;
 /// 首个布局完成是否已向 Lua 派发 onLayout（游标等依赖真实 frame 的定位需在布局后执行）。
@@ -435,6 +438,43 @@
             return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
         }
     }
+    // ---- 光影包（Shaders）服务：与 mods 同构（ShaderService 扫描 shaderpacks，.zip/.zip.disabled 启停）----
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"list"]) {
+        if (self.shadersCache.count == 0) [self restartShadersScan];
+        return @{ @"ok": @YES, @"profile": PLProfiles.current.selectedProfileName ?: @"",
+                  @"items": self.shadersCache ?: @[] };
+    }
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"refresh"]) {
+        [self restartShadersScan];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"toggle"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.shadersCache && idx < self.shadersCache.count) {
+            NSDictionary *item = self.shadersCache[idx];
+            ShaderItem *sh = [ShaderItem new];
+            sh.fileName = item[@"fileName"];
+            sh.filePath = item[@"filePath"];
+            sh.disabled = [item[@"enabled"] boolValue] == NO;
+            NSError *err = nil;
+            BOOL ok = [[ShaderService sharedService] toggleEnableForShader:sh error:&err];
+            [self restartShadersScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"shaders"] && [method isEqualToString:@"delete"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.shadersCache && idx < self.shadersCache.count) {
+            NSDictionary *item = self.shadersCache[idx];
+            ShaderItem *sh = [ShaderItem new];
+            sh.fileName = item[@"fileName"];
+            sh.filePath = item[@"filePath"];
+            NSError *err = nil;
+            BOOL ok = [[ShaderService sharedService] deleteShader:sh error:&err];
+            [self restartShadersScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
     if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
         // 仅描述结构：动态值由设备/运行时填充，不写死。
         return @{ @"ok": @YES,
@@ -812,6 +852,36 @@
             strongSelf.modsCache = items;
             if (strongSelf.runtime) {
                 [strongSelf.runtime dispatchEvent:@"onModsUpdated"
+                                        arguments:@[@{ @"ok": @YES, @"items": items }]];
+            }
+        });
+    }];
+}
+
+// 光影包（Shaders）异步扫描：ShaderService 扫描当前版本 shaderpacks/，结构化为缓存并推送 Lua。
+- (void)restartShadersScan {
+    NSString *profile = PLProfiles.current.selectedProfileName;
+    __weak typeof(self) weakSelf = self;
+    [[ShaderService sharedService] scanShadersForProfile:profile completion:^(NSArray<ShaderItem *> *shaders) {
+        NSMutableArray *items = [NSMutableArray new];
+        [shaders enumerateObjectsUsingBlock:^(ShaderItem *s, NSUInteger i, BOOL *stop) {
+            NSString *name = s.displayName.length > 0 ? s.displayName : s.fileName;
+            [items addObject:@{
+                @"name": name ?: @"",
+                @"fileName": s.fileName ?: @"",
+                @"filePath": s.filePath ?: @"",
+                @"enabled": @(!s.disabled),
+                @"author": s.author ?: @"",
+                @"gameVersion": s.gameVersion ?: @"",
+            }];
+        }];
+        // Lua 状态单线程访问：合并更新 + 事件必须回到主线程。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.shadersCache = items;
+            if (strongSelf.runtime) {
+                [strongSelf.runtime dispatchEvent:@"onShadersUpdated"
                                         arguments:@[@{ @"ok": @YES, @"items": items }]];
             }
         });
