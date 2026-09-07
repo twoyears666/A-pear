@@ -18,6 +18,7 @@
 #import "ModsManagerViewController.h"
 #import "ModService.h"
 #import "ShaderService.h"
+#import "MinecraftResourceDownloadTask.h"
 #import "ModItem.h"
 #import "ShadersManagerViewController.h"
 #import "ModpackImportViewController.h"
@@ -43,6 +44,9 @@
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *modsCache;
 /// 光影包（Shaders）缓存：ShaderService 扫描结果的 Lua 可渲染结构；refresh 后派发 onShadersUpdated。
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *shadersCache;
+/// 当前真实下载任务（下载页「开始下载」触发）；progress.fractionCompleted 由定时器播报到 Lua。
+@property (nonatomic, strong, nullable) MinecraftResourceDownloadTask *activeDownloadTask;
+@property (nonatomic, strong, nullable) NSTimer *downloadPublishTimer;
 /// 当前内容页标识（home/download/settings/...），变化时向 Lua 包派发 onPageChange
 @property (nonatomic, copy, nullable) NSString *currentLuaPage;
 /// 首个布局完成是否已向 Lua 派发 onLayout（游标等依赖真实 frame 的定位需在布局后执行）。
@@ -493,8 +497,30 @@
         return @{ @"ok": @YES, @"summary": @"" };
     }
     // 下载进度等异步服务：返回占位结构，真实实现由服务类异步回调后 emit 刷新。
+    if ([service isEqualToString:@"download"] && [method isEqualToString:@"start"]) {
+        // 真实下载：按版本 id 创建 MinecraftResourceDownloadTask 并启动（downloadVersion: 内部建任务项 + 拉清单→版本JSON→库/资源）
+        NSString *vid = args[@"versionId"];
+        if (![vid isKindOfClass:NSString.class] || vid.length == 0) return @{ @"ok": @NO };
+        MinecraftResourceDownloadTask *t = [MinecraftResourceDownloadTask new];
+        self.activeDownloadTask = t;
+        [self startDownloadPublishTimer];
+        [t downloadVersion:@{ @"id": vid }];
+        return @{ @"ok": @YES, @"versionId": vid };
+    }
     if ([service isEqualToString:@"download"] && [method isEqualToString:@"summary"]) {
-        return @{ @"ok": @YES, @"activity": @0, @"downloaded": @0, @"total": @0 };
+        MinecraftResourceDownloadTask *t = self.activeDownloadTask;
+        if (!t || !t.progress) return @{ @"ok": @YES, @"activity": @0, @"downloaded": @0, @"total": @0 };
+        double frac = t.progress.fractionCompleted;
+        if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+        BOOL finished = (t.progress.totalUnitCount > 0 && t.progress.completedUnitCount >= t.progress.totalUnitCount);
+        return @{ @"ok": @YES, @"activity": @1, @"downloaded": @((int)(frac*100)),
+                  @"total": @100, @"finished": @(finished) };
+    }
+    if ([service isEqualToString:@"download"] && [method isEqualToString:@"cancel"]) {
+        [self.activeDownloadTask cancel];
+        [self stopDownloadPublishTimer];
+        self.activeDownloadTask = nil;
+        return @{ @"ok": @YES };
     }
     NSLog(@"[PLUIShell] unknown lua service %@.%@", service, method);
     return @{ @"ok": @NO };
@@ -957,6 +983,30 @@
             }
         });
     }];
+}
+
+// 下载进度订阅器：每 0.3s 把 activeDownloadTask 的 fractionCompleted 播报为 onDownloadUpdate 事件，完成后停止。
+- (void)startDownloadPublishTimer {
+    [self.downloadPublishTimer invalidate];
+    self.downloadPublishTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self
+        selector:@selector(publishDownloadProgress) userInfo:nil repeats:YES];
+}
+- (void)stopDownloadPublishTimer {
+    [self.downloadPublishTimer invalidate];
+    self.downloadPublishTimer = nil;
+}
+- (void)publishDownloadProgress {
+    MinecraftResourceDownloadTask *t = self.activeDownloadTask;
+    if (!t || !t.progress) return;
+    double frac = t.progress.fractionCompleted;
+    if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+    BOOL finished = (t.progress.totalUnitCount > 0 && t.progress.completedUnitCount >= t.progress.totalUnitCount);
+    if (finished) [self stopDownloadPublishTimer];
+    if (self.runtime) {
+        [self.runtime dispatchEvent:@"onDownloadUpdate"
+                        arguments:@[@{ @"downloaded": @((int)(frac * 100)), @"total": @100,
+                                       @"finished": @(finished) }]];
+    }
 }
 
 - (void)showModpackImport {
