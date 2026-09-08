@@ -94,9 +94,12 @@
         [PLUIPackManager.sharedManager reload];
         PLUIPack *pack = PLUIPackManager.sharedManager.activePack;
         if (!pack) {
+            NSLog(@"[PLUIShell] no active UI pack (uipack/active empty + theme_pack unresolvable); showing welcome / import screen");
             [self buildWelcomeView];
             return;
         }
+        NSLog(@"[PLUIShell] active UI pack loaded: '%@' (id=%@, root=%@)", pack.displayName,
+              pack.identifier, pack.rootPath);
 
         // 主题数据源切到激活 UI 包：$color: 令牌严格按包 colors.json 解析（黑底根治）。
         [PLThemeManager.sharedManager loadColorsFromRoot:pack.rootPath];
@@ -834,7 +837,9 @@
     NSString *pageNodeId = [self.class luaPageNodeIdForPage:page];
     PLUINodeView *target = pageNodeId ? [self.engine viewForId:pageNodeId] : nil;
     if (!target) {
-        NSLog(@"[PLUIShell] no Lua subtree for page '%@'; falling back to native VC", page);
+        PLUIPack *pack = PLUIPackManager.sharedManager.activePack;
+        NSLog(@"[PLUIShell] no Lua subtree for page '%@' (active pack='%@' id=%@); falling back to native VC",
+              page, pack.displayName, pack.identifier);
         [self fallbackNativePage:page];
         return;
     }
