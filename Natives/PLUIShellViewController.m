@@ -533,6 +533,10 @@
         self.activeDownloadTask = nil;
         return @{ @"ok": @YES };
     }
+    if ([service isEqualToString:@"download"] && [method isEqualToString:@"versions"]) {
+        if (self.remoteVersionList.count <= 2) [self fetchRemoteVersionList];
+        return [self downloadVersionGroups];
+    }
     NSLog(@"[PLUIShell] unknown lua service %@.%@", service, method);
     return @{ @"ok": @NO };
 }
@@ -1026,6 +1030,60 @@
     }];
 }
 
+// 远程版本按 PCL 分类分组（正式版/快照/愚人节/远古 + 最新），供下载页版本列表渲染。
+// 远程条目来自 version_manifest_v2.json，字段 id/type/releaseTime。
+- (NSDictionary *)downloadVersionGroups {
+    NSArray *remote = self.remoteVersionList ?: @[];
+    NSMutableArray<NSDictionary *> *release = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *snapshot = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *fools = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *ancient = [NSMutableArray array];
+    for (NSDictionary *v in remote) {
+        if (![v isKindOfClass:NSDictionary.class]) continue;
+        NSString *vid = [v[@"id"] isKindOfClass:NSString.class] ? v[@"id"] : @"";
+        NSString *type = [v[@"type"] isKindOfClass:NSString.class] ? v[@"type"] : @"";
+        NSString *date = [v[@"releaseTime"] isKindOfClass:NSString.class] ? v[@"releaseTime"] : @"";
+        if (vid.length == 0) continue;
+        NSString *low = vid.lowercaseString;
+        BOOL isFool = ([low rangeOfString:@"april"].location != NSNotFound) ||
+                      ([low rangeOfString:@"fools"].location != NSNotFound) ||
+                      ([low rangeOfString:@"1.rv"].location != NSNotFound);
+        NSDictionary *item = @{ @"id": vid, @"date": date };
+        if (isFool) {
+            [fools addObject:item];
+        } else if ([type isEqualToString:@"release"]) {
+            [release addObject:item];
+        } else if ([type isEqualToString:@"snapshot"]) {
+            [snapshot addObject:item];
+        } else {
+            [ancient addObject:item]; // old_alpha / old_beta / pre-classic 等
+        }
+    }
+    [release sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]]; // 最新在前
+    }];
+    [snapshot sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]];
+    }];
+    [fools sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]];
+    }];
+    [ancient sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]];
+    }];
+    return @{
+        @"ok": @YES,
+        @"latestRelease": release.firstObject ?: @{},
+        @"latestSnapshot": snapshot.firstObject ?: @{},
+        @"groups": @[
+            @{ @"key": @"release", @"items": release },
+            @{ @"key": @"snapshot", @"items": snapshot },
+            @{ @"key": @"april_fools", @"items": fools },
+            @{ @"key": @"ancient", @"items": ancient },
+        ],
+    };
+}
+
 // 下载进度订阅器：每 0.3s 把 activeDownloadTask 的 fractionCompleted 播报为 onDownloadUpdate 事件，完成后停止。
 - (void)startDownloadPublishTimer {
     [self.downloadPublishTimer invalidate];
@@ -1156,6 +1214,8 @@
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [self.remoteVersionList addObjectsFromArray:json[@"versions"]];
                         setPrefObject(@"internal.latest_version", json[@"latest"]);
+                        // 版本清单已就绪，通知 UI 包刷新下载页版本列表
+                        [self.runtime dispatchEvent:@"onRemoteVersions" arguments:@[]];
                     });
                 }
             }
