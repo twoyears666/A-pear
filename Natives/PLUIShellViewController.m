@@ -135,6 +135,14 @@
         [self.engine enumerateNodes:^(PLUINodeView *node) {
             if (node.isContentArea) self.contentNode = node;
         }];
+        // 加载诊断：若 Lua 页子树缺失，直接在此注明 content 页数与 pageHome 是否存在，
+        // 方便区分「树未建出 pageHome」还是「pageIdForToken 解析错」。
+        PLUINodeView *homeNode = [self.engine viewForId:@"pageHome"];
+        PLUINodeView *contentNode = self.contentNode;
+        NSLog(@"[PLUIShell] build diagnostics: contentNode=%@ contentPages=%lu pageHome(viewForId)=%@",
+              contentNode ? @"yes" : @"nil",
+              (unsigned long)contentNode.contentPages.count,
+              homeNode ? @"PRESENT" : @"MISSING");
         [self wireActions];
         [self wireRuntime];
         [self refreshShellBackdrop];

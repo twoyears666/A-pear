@@ -1,7 +1,7 @@
 #import "PLUILayoutEngine.h"
 #import "PLUINodeView.h"
 
-static NSUInteger const PLUILayoutMaxNodes = 500;
+static NSUInteger const PLUILayoutMaxNodes = 2000;
 static NSInteger const PLUILayoutMaxDepth = 12;
 
 @interface PLUILayoutEngine ()
