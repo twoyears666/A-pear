@@ -2,6 +2,7 @@
 
 @class AFURLSessionManager;
 @class ModpackAPI;
+@class DownloadTaskItem;
 
 extern NSString * const kMinecraftResourceDownloadBackgroundSessionIdentifier;
 
@@ -23,6 +24,10 @@ extern NSString * const kMinecraftResourceDownloadBackgroundSessionIdentifier;
 // 阶段5修复（参照 FCL）：失败的文件列表，单文件下载失败不再取消整批任务，
 // 而是记录到此数组，最终汇总报告给用户。每个元素是 @{@"name": ..., "error": ...}
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *failedFiles;
+
+// 供 UI 壳查询当前任务项与版本 id（下载进度/收尾事件使用）。
+@property(nonatomic, strong, readonly) DownloadTaskItem *currentDownloadTaskItem;
+@property(nonatomic, copy, readonly) NSString *currentVersionId;
 
 // 新增方法声明（用于账户检查）
 - (BOOL)checkAccessWithDialog:(BOOL)show;

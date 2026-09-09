@@ -28,8 +28,8 @@ static const NSUInteger kMCStageIndexVerify = 5;
 
 @interface MinecraftResourceDownloadTask ()
 @property AFURLSessionManager* manager;
-@property (nonatomic, strong) DownloadTaskItem *currentDownloadTaskItem;
-@property (nonatomic, copy) NSString *currentVersionId;
+@property (nonatomic, strong, readwrite) DownloadTaskItem *currentDownloadTaskItem;
+@property (nonatomic, copy, readwrite) NSString *currentVersionId;
 @property (nonatomic, assign) BOOL isObservingTaskProgress;
 @property (nonatomic, assign) NSTimeInterval progressLastTime;
 @property (nonatomic, assign) int64_t progressLastCompleted;

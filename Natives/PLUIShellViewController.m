@@ -19,6 +19,8 @@
 #import "ModService.h"
 #import "ShaderService.h"
 #import "MinecraftResourceDownloadTask.h"
+#import "DownloadTaskItem.h"
+#import "MinecraftResourceUtils.h"
 #import "ModItem.h"
 #import "ShadersManagerViewController.h"
 #import "ModpackImportViewController.h"
@@ -359,6 +361,78 @@
         [p saveProfile:profile withName:name];
         return @{ @"ok": @YES };
     }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"openDir"]) {
+        // 在系统文件 App 中打开当前版本目录（ Documents/instances/<gameDir>/.minecraft/versions/<versionId> ）。
+        PLProfiles *p = PLProfiles.current;
+        NSString *name = p.selectedProfileName;
+        if (name.length == 0) return @{ @"ok": @NO, @"error": @"no selected version" };
+        NSString *gameDir = getPrefObject(@"general.game_directory") ?: @"default";
+        NSString *base = [NSString stringWithFormat:@"%s/instances/%@/.minecraft/versions/%@", getenv("POJAV_HOME"), gameDir, name];
+        NSURL *url = [NSURL fileURLWithPath:base];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:base]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+        if (@available(iOS 10.0, *)) {
+            [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+        } else {
+            [[UIApplication sharedApplication] openURL:url];
+        }
+        return @{ @"ok": @YES, @"path": base };
+    }
+    if ([service isEqualToString:@"versionSettings"] && ([method isEqualToString:@"openSaves"] || [method isEqualToString:@"openMods"])) {
+        PLProfiles *p = PLProfiles.current;
+        NSString *name = p.selectedProfileName;
+        if (name.length == 0) return @{ @"ok": @NO, @"error": @"no selected version" };
+        NSString *gameDir = getPrefObject(@"general.game_directory") ?: @"default";
+        NSString *base = [NSString stringWithFormat:@"%s/instances/%@/.minecraft/versions/%@", getenv("POJAV_HOME"), gameDir, name];
+        NSString *folder = [[base stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+        folder = [folder stringByAppendingPathComponent:[method isEqualToString:@"openSaves"] ? @"saves" : @"mods"];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:folder]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+        NSURL *url = [NSURL fileURLWithPath:folder];
+        if (@available(iOS 10.0, *)) {
+            [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+        } else {
+            [[UIApplication sharedApplication] openURL:url];
+        }
+        return @{ @"ok": @YES, @"path": folder };
+    }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"reset"]) {
+        // 重置当前 profile 的版本独立设置：删除白名单内的 key。
+        static NSSet<NSString *> *allowed = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            allowed = [NSSet setWithArray:@[@"versionIsolation", @"windowTitle", @"windowInfo",
+                                            @"javaVersion", @"ramType", @"ram", @"ramOptimize", @"serverIp", @"loginMode"]];
+        });
+        PLProfiles *p = PLProfiles.current;
+        NSString *name = p.selectedProfileName;
+        if (name.length == 0) return @{ @"ok": @NO };
+        NSMutableDictionary *profile = [[p.profiles objectForKey:name] mutableCopy] ?: [NSMutableDictionary new];
+        for (NSString *k in allowed) { [profile removeObjectForKey:k]; }
+        [p saveProfile:profile withName:name];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"delete"]) {
+        // 删除当前选中的 profile 及其版本文件夹。
+        PLProfiles *p = PLProfiles.current;
+        NSString *name = p.selectedProfileName;
+        if (name.length == 0) return @{ @"ok": @NO, @"error": @"no selected version" };
+        NSString *gameDir = getPrefObject(@"general.game_directory") ?: @"default";
+        NSString *base = [NSString stringWithFormat:@"%s/instances/%@/.minecraft/versions/%@", getenv("POJAV_HOME"), gameDir, name];
+        [[NSFileManager defaultManager] removeItemAtPath:base error:nil];
+        NSMutableDictionary *profiles = [p.profiles mutableCopy] ?: [NSMutableDictionary new];
+        [profiles removeObjectForKey:name];
+        p.profiles = profiles;
+        [p save];
+        if ([p.selectedProfileName isEqualToString:name]) {
+            p.selectedProfileName = profiles.allKeys.firstObject ?: @"";
+        }
+        [self reloadVersionLists];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
+        return @{ @"ok": @YES };
+    }
     if ([service isEqualToString:@"instance"] && [method isEqualToString:@"list"]) {
         // 版本选择界面右侧目录：直接渲染 /Documents/instances 下所有文件夹（default 为根目录内置，不列入）。
         NSMutableArray *items = [NSMutableArray new];
@@ -512,8 +586,41 @@
         // 真实下载：按版本 id 创建 MinecraftResourceDownloadTask 并启动（downloadVersion: 内部建任务项 + 拉清单→版本JSON→库/资源）
         NSString *vid = args[@"versionId"];
         if (![vid isKindOfClass:NSString.class] || vid.length == 0) return @{ @"ok": @NO };
+
+        // 把即将安装的版本注册到 launcher_profiles.json 并选中，下载完成后即可在版本管理/首页看到。
+        NSString *effectiveVersionId = vid;
+        if ([vid isEqualToString:@"latest-release"]) {
+            effectiveVersionId = getPrefObject(@"internal.latest_version.release") ?: vid;
+        } else if ([vid isEqualToString:@"latest-snapshot"]) {
+            effectiveVersionId = getPrefObject(@"internal.latest_version.snapshot") ?: vid;
+        }
+        if (effectiveVersionId.length > 0 && ![effectiveVersionId isEqualToString:@"latest-release"] && ![effectiveVersionId isEqualToString:@"latest-snapshot"]) {
+            NSMutableDictionary *profile = [NSMutableDictionary dictionary];
+            profile[@"name"] = effectiveVersionId;
+            profile[@"lastVersionId"] = effectiveVersionId;
+            profile[@"gameDir"] = @".";
+            profile[@"type"] = @"custom";
+            profile[@"created"] = [NSDate date].description;
+            [PLProfiles.current saveProfile:profile withName:effectiveVersionId];
+            PLProfiles.current.selectedProfileName = effectiveVersionId;
+        }
+
         MinecraftResourceDownloadTask *t = [MinecraftResourceDownloadTask new];
         self.activeDownloadTask = t;
+        __weak typeof(self) weakSelf = self;
+        __weak MinecraftResourceDownloadTask *weakTask = t;
+        t.handleError = ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSString *err = weakTask.currentDownloadTaskItem.errorInfo.localizedDescription ?: @"下载失败";
+            [strongSelf stopDownloadPublishTimer];
+            strongSelf.activeDownloadTask = nil;
+            [strongSelf.runtime dispatchEvent:@"onDownloadFinished"
+                                    arguments:@[@{ @"versionId": effectiveVersionId,
+                                                  @"success": @NO,
+                                                  @"cancelled": @NO,
+                                                  @"error": err }]];
+        };
         [self startDownloadPublishTimer];
         [t downloadVersion:@{ @"id": vid }];
         return @{ @"ok": @YES, @"versionId": vid };
@@ -530,7 +637,13 @@
     if ([service isEqualToString:@"download"] && [method isEqualToString:@"cancel"]) {
         [self.activeDownloadTask cancel];
         [self stopDownloadPublishTimer];
+        NSString *vid = self.activeDownloadTask.currentVersionId ?: @"";
         self.activeDownloadTask = nil;
+        [self.runtime dispatchEvent:@"onDownloadFinished"
+                        arguments:@[@{ @"versionId": vid,
+                                      @"success": @NO,
+                                      @"cancelled": @YES,
+                                      @"error": @"" }]];
         return @{ @"ok": @YES };
     }
     if ([service isEqualToString:@"download"] && [method isEqualToString:@"versions"]) {
@@ -786,10 +899,7 @@
 }
 
 - (void)showVersionManager {
-    VersionManagerViewController *vc = [[VersionManagerViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.navigationBar.prefersLargeTitles = NO;
-    [self setContentViewController:nav animated:YES];
+    [self showLuaPage:@"versionManager"];
 }
 
 - (void)showProfileEditor:(NSNotification *)notification {
@@ -836,6 +946,9 @@
     NSDictionary *map = @{
         @"home": @"pageHome", @"download": @"pageDownload", @"multi": @"pageMulti",
         @"settings": @"pageSettings", @"more": @"pageMore",
+        @"versionManager": @"pageVersionManager", @"accountManager": @"pageAccountManager",
+        @"gameDirectory": @"pageGameDirectory", @"version_settings": @"pageVersionSettings",
+        @"versionDetail": @"pageVersionDetail",
     };
     return map[page];
 }
@@ -846,9 +959,16 @@
     if (![page isKindOfClass:NSString.class]) return;
     if (!self.engine || !self.contentNode) return;
 
-    NSString *pageNodeId = [self.class luaPageNodeIdForPage:page];
-    PLUINodeView *target = pageNodeId ? [self.engine viewForId:pageNodeId] : nil;
-    if (!target) {
+    // 优先使用 UI 包 CONFIG.pages 的别名映射，旧包回退到硬编码映射。
+    NSString *pageNodeId = [self.contentNode pageIdForToken:page];
+    if (!pageNodeId) pageNodeId = [self.class luaPageNodeIdForPage:page];
+
+    // 内容区是否存在该 Lua 子树（支持 versionManager/accountManager/gameDirectory 等扩展页）。
+    BOOL hasLuaPage = NO;
+    for (PLUINodeView *p in self.contentNode.contentPages) {
+        if (p.nodeId && [p.nodeId isEqualToString:pageNodeId]) { hasLuaPage = YES; break; }
+    }
+    if (!hasLuaPage) {
         PLUIPack *pack = PLUIPackManager.sharedManager.activePack;
         NSLog(@"[PLUIShell] no Lua subtree for page '%@' (active pack='%@' id=%@); falling back to native VC",
               page, pack.displayName, pack.identifier);
@@ -858,17 +978,8 @@
 
     // 撤下先前原生挂载的内容 VC（Mod/光影/设置编辑器等次级页），Lua 子树接管
     [self removeNativeContentViewController];
-
-    NSArray<NSString *> *pageIds = @[@"pageHome", @"pageDownload", @"pageMulti",
-                                     @"pageSettings", @"pageMore"];
-    for (NSString *pid in pageIds) {
-        PLUINodeView *n = [self.engine viewForId:pid];
-        if (!n) continue;
-        BOOL visible = [pid isEqualToString:pageNodeId];
-        [n fadeToVisible:visible duration:0.18];
-    }
-    self.currentLuaPage = page;
-    [self.runtime dispatchEvent:@"onPageChange" arguments:@[page]];
+    [self.contentNode showLuaPage:pageNodeId animated:YES];
+    [self dispatchLuaPageChange:page];
 }
 
 /// 包未定义 Lua 页子树时的回退：沿用旧机制的固定 VC 挂载。
@@ -892,6 +1003,29 @@
         PLUIMoreViewController *vc = [[PLUIMoreViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
         nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+    } else if ([page isEqualToString:@"versionManager"]) {
+        VersionManagerViewController *vc = [[VersionManagerViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+    } else if ([page isEqualToString:@"accountManager"]) {
+        AccountListViewController *vc = [[AccountListViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        vc.whenItemSelected = ^void() {
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"UpdateAccountInfo" object:nil];
+        };
+        vc.whenDelete = ^void(NSString *name) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"UpdateAccountInfo" object:nil];
+        };
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+    } else if ([page isEqualToString:@"gameDirectory"]) {
+        VersionManagerViewController *vm = [[VersionManagerViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vm];
+        nav.navigationBar.prefersLargeTitles = NO;
+        LauncherPrefGameDirViewController *g = [[LauncherPrefGameDirViewController alloc] init];
+        [nav pushViewController:g animated:NO];
         [self setContentViewController:nav animated:YES];
     } else {
         LauncherNewsViewController *newsVC = [[LauncherNewsViewController alloc] init];
@@ -932,12 +1066,7 @@
 }
 
 - (void)showGameDirectory {
-    VersionManagerViewController *vm = [[VersionManagerViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vm];
-    nav.navigationBar.prefersLargeTitles = NO;
-    LauncherPrefGameDirViewController *g = [[LauncherPrefGameDirViewController alloc] init];
-    [nav pushViewController:g animated:NO];
-    [self setContentViewController:nav animated:YES];
+    [self showLuaPage:@"gameDirectory"];
 }
 
 // Lua 服务落点：切换游戏目录（镜像 LauncherPrefGameDirViewController.changeSelectionTo:）
@@ -1106,6 +1235,26 @@
                         arguments:@[@{ @"downloaded": @((int)(frac * 100)), @"total": @100,
                                        @"finished": @(finished) }]];
     }
+    if (finished) {
+        // 下载收尾：刷新本地版本列表，通知旧页面刷新，并向 Lua 派发完成/失败结果。
+        DownloadTaskState state = t.currentDownloadTaskItem ? t.currentDownloadTaskItem.state : DownloadTaskStateCompleted;
+        NSString *vid = t.currentVersionId ?: @"";
+        BOOL success = (state == DownloadTaskStateCompleted);
+        BOOL cancelled = (state == DownloadTaskStateCancelled);
+        NSString *err = t.currentDownloadTaskItem.errorInfo.localizedDescription ?: @"";
+        if (success) {
+            [self reloadVersionLists];
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
+        }
+        self.activeDownloadTask = nil;
+        if (self.runtime) {
+            [self.runtime dispatchEvent:@"onDownloadFinished"
+                            arguments:@[@{ @"versionId": vid,
+                                          @"success": @(success),
+                                          @"cancelled": @(cancelled),
+                                          @"error": err }]];
+        }
+    }
 }
 
 - (void)showModpackImport {
@@ -1118,16 +1267,7 @@
 }
 
 - (void)showAccountManager {
-    AccountListViewController *vc = [[AccountListViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    vc.whenItemSelected = ^void() {
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"UpdateAccountInfo" object:nil];
-    };
-    vc.whenDelete = ^void(NSString *name) {
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"UpdateAccountInfo" object:nil];
-    };
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.navigationBar.prefersLargeTitles = NO;
-    [self setContentViewController:nav animated:YES];
+    [self showLuaPage:@"accountManager"];
 }
 
 - (void)backgroundChanged {

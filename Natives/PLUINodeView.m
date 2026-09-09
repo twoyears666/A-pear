@@ -1038,10 +1038,10 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 }
 
 - (void)attachTapGestureIfNeeded {
-    // 带动作的非按钮节点（如 PCL2 两行启动按钮 = column + 两个 text）挂轻点手势；
-    // cancelsTouchesInView=NO 不拦截内嵌 UIButton 的触摸（若包作者混用，动作会双发，
-    // 由包自行避免"容器带 action 且内含 action 按钮"的组合）。
-    if (self.action.length == 0 || self.button) return;
+    // 任意带 id 或 action 的非按钮节点都挂轻点手势，保证 Lua onClick 能收到所有可寻址节点。
+    // 按钮由 UIControl 接管；cancelsTouchesInView=NO 不拦截内嵌 UIButton 的触摸。
+    if (self.button) return;
+    if (self.action.length == 0 && self.nodeId.length == 0) return;
     if (_tapGesture) return;
     _tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(nodeTapped:)];
     _tapGesture.cancelsTouchesInView = NO;
