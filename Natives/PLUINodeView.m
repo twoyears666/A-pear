@@ -156,18 +156,18 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     if ([kind isEqualToString:@"card"]) {
         out = [node mutableCopy];
         if (!out[@"background"]) out[@"background"] = @"$color:card";
-        if (!out[@"border"])      out[@"border"] = @{ @"width": @1, @"color": @"$color:cardBorder" };
+        if (!out[@"border"])      out[@"border"] = @{ @"width": @"0.12vh", @"color": @"$color:cardBorder" };
         if (!out[@"corner"])      out[@"corner"] = @"1.2vh";
-        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @4, @"opacity": @0.07, @"x": @0, @"y": @1 };
+        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @"0.3vh", @"opacity": @0.07, @"x": @0, @"y": @"0.15vh" };
         if (!out[@"padding"])     out[@"padding"] = @"2vh";
         if (!out[@"spacing"])     out[@"spacing"] = @"1vh";
     } else if ([kind isEqualToString:@"row_item"]) {
         out = [node mutableCopy];
         if (!out[@"height"])      out[@"height"] = @"8vh";
         if (!out[@"background"])  out[@"background"] = @"$color:card";
-        if (!out[@"border"])      out[@"border"] = @{ @"width": @1, @"color": @"$color:cardBorder" };
+        if (!out[@"border"])      out[@"border"] = @{ @"width": @"0.12vh", @"color": @"$color:cardBorder" };
         if (!out[@"corner"])      out[@"corner"] = @"1.2vh";
-        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @4, @"opacity": @0.07, @"x": @0, @"y": @1 };
+        if (!out[@"shadow"])      out[@"shadow"] = @{ @"blur": @"0.3vh", @"opacity": @0.07, @"x": @0, @"y": @"0.15vh" };
         if (!out[@"hoverColor"])  out[@"hoverColor"] = @"$color:hover";
         if (!out[@"crossAlign"])  out[@"crossAlign"] = @"center";
         if (!out[@"padding"])     out[@"padding"] = @"2vh";
@@ -349,10 +349,14 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
         self.backgroundColor = PLUIResolveColor(node[@"background"], self.backgroundColor);
     }
 
-    // 描边：border = { width, color }（PCL2 白底蓝描边按钮 / 卡片描边）
+    // 描边：border = { width, color }（PCL2 白底蓝描边按钮 / 卡片描边）。
+    // width 支持数字 pt 或 "Nvh" 相对窗口高。
     if ([node[@"border"] isKindOfClass:NSDictionary.class]) {
         NSDictionary *border = node[@"border"];
-        CGFloat bw = [border[@"width"] isKindOfClass:NSNumber.class] ? [border[@"width"] doubleValue] : 0;
+        id bwSpec = border[@"width"];
+        CGFloat bw = 0;
+        if ([bwSpec isKindOfClass:NSNumber.class]) bw = [bwSpec doubleValue];
+        else { CGFloat f = PLUIVHFactor(bwSpec); if (f > 0) bw = f * [self pluiVHUnit]; }
         if (bw > 0) {
             self.layer.borderWidth = bw;
             self.layer.borderColor = PLUIResolveColor(border[@"color"], UIColor.separatorColor).CGColor;
@@ -360,16 +364,22 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     }
 
     // 阴影：shadow = { blur, opacity, x, y }（PCL2 卡片柔和投影）。
-    // 卡片同时有圆角与阴影：用 layer 圆角裁背景、阴影不裁子视图（masksToBounds=NO）。
+    // blur/x/y 支持数字 pt 或 "Nvh" 相对窗口高。
     if ([node[@"shadow"] isKindOfClass:NSDictionary.class]) {
         NSDictionary *shadow = node[@"shadow"];
-        CGFloat blur = [shadow[@"blur"] isKindOfClass:NSNumber.class] ? [shadow[@"blur"] doubleValue] : 0;
+        id blurSpec = shadow[@"blur"];
+        CGFloat blur = 0;
+        if ([blurSpec isKindOfClass:NSNumber.class]) blur = [blurSpec doubleValue];
+        else { CGFloat f = PLUIVHFactor(blurSpec); if (f > 0) blur = f * [self pluiVHUnit]; }
         if (blur > 0) {
+            id xSpec = shadow[@"x"], ySpec = shadow[@"y"];
+            CGFloat sx = [xSpec isKindOfClass:NSNumber.class] ? [xSpec doubleValue] : PLUIVHFactor(xSpec) * [self pluiVHUnit];
+            CGFloat sy = [ySpec isKindOfClass:NSNumber.class] ? [ySpec doubleValue] : PLUIVHFactor(ySpec) * [self pluiVHUnit];
             self.layer.shadowColor = UIColor.blackColor.CGColor;
             self.layer.shadowOpacity = [shadow[@"opacity"] isKindOfClass:NSNumber.class]
                 ? (float)[shadow[@"opacity"] doubleValue] : 0.0f;
             self.layer.shadowRadius = blur;
-            self.layer.shadowOffset = CGSizeMake([shadow[@"x"] doubleValue], [shadow[@"y"] doubleValue]);
+            self.layer.shadowOffset = CGSizeMake(sx, sy);
             self.layer.masksToBounds = NO;
         }
     }
@@ -1078,7 +1088,12 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
         }
     }
     id bw = spec[@"borderWidth"];
-    if ([bw isKindOfClass:NSNumber.class]) self.layer.borderWidth = [bw doubleValue];
+    if ([bw isKindOfClass:NSNumber.class]) {
+        self.layer.borderWidth = [bw doubleValue];
+    } else if (bw) {
+        CGFloat f = PLUIVHFactor(bw);
+        if (f > 0) self.layer.borderWidth = f * [self pluiVHUnit];
+    }
     id bc = spec[@"borderColor"];
     if ([bc isKindOfClass:NSString.class]) {
         UIColor *color = PLUIResolveColor(bc, nil);
