@@ -422,12 +422,10 @@
         NSString *gameDir = getPrefObject(@"general.game_directory") ?: @"default";
         NSString *base = [NSString stringWithFormat:@"%s/instances/%@/.minecraft/versions/%@", getenv("POJAV_HOME"), gameDir, name];
         [[NSFileManager defaultManager] removeItemAtPath:base error:nil];
-        NSMutableDictionary *profiles = [p.profiles mutableCopy] ?: [NSMutableDictionary new];
-        [profiles removeObjectForKey:name];
-        p.profiles = profiles;
+        [p.profiles removeObjectForKey:name];
         [p save];
         if ([p.selectedProfileName isEqualToString:name]) {
-            p.selectedProfileName = profiles.allKeys.firstObject ?: @"";
+            p.selectedProfileName = p.profiles.allKeys.firstObject ?: @"";
         }
         [self reloadVersionLists];
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
