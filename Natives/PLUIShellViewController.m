@@ -33,7 +33,7 @@
 #import "AI/AiSessionStore.h"
 #import "authenticator/BaseAuthenticator.h"
 
-@interface PLUIShellViewController () <UINavigationControllerDelegate, UIDocumentPickerDelegate>
+@interface PLUIShellViewController () <UINavigationControllerDelegate, UIDocumentPickerDelegate, MultiplayerManagerDelegate>
 @property (nonatomic, strong) PLUILayoutEngine *engine;
 @property (nonatomic, strong) PLLuaRuntime *runtime;
 @property (nonatomic, strong) PLUINodeView *contentNode;
@@ -65,6 +65,8 @@
     [self initializeVersionLists];
     [self buildShell];
     [self registerNotifications];
+    // 接收联机管理器状态/进度/错误回调，转发给 Lua 页。
+    [MultiplayerManager sharedManager].delegate = self;
 }
 
 - (void)dealloc {
@@ -648,8 +650,246 @@
         if (self.remoteVersionList.count <= 2) [self fetchRemoteVersionList];
         return [self downloadVersionGroups];
     }
+    // ---- 联机服务：连接/断开/创建/加入/分享/状态 ----
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"list"]) {
+        return @{ @"ok": @YES, @"items": [self serverStateList] };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"status"]) {
+        MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+        MultiplayerRoom *room = mpm.currentRoom;
+        NSString *status = @"未连接";
+        if (room) {
+            switch (room.status) {
+                case MultiplayerRoomStatusConnecting: status = @"连接中"; break;
+                case MultiplayerRoomStatusConnected:  status = @"已连接"; break;
+                case MultiplayerRoomStatusError:      status = @"连接失败"; break;
+                default: status = @"未连接"; break;
+            }
+        }
+        return @{
+            @"ok": @YES,
+            @"connected": @(room != nil && room.status == MultiplayerRoomStatusConnected),
+            @"roomId": room.roomId ?: @"",
+            @"name": room.name ?: @"",
+            @"networkId": room.networkId ?: @"",
+            @"hostIP": room.hostIP ?: @"",
+            @"hostPort": room.hostPort ?: @"",
+            @"localIP": mpm.currentLocalIP ?: @"",
+            @"status": status,
+        };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"connect"]) {
+        NSInteger idx = [args[@"index"] integerValue];
+        MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+        NSArray<MultiplayerRoom *> *rooms = mpm.savedRooms;
+        if (idx < 1 || idx > (NSInteger)rooms.count) {
+            return @{ @"ok": @NO, @"error": @"房间索引无效" };
+        }
+        MultiplayerRoom *room = rooms[idx - 1];
+        MultiplayerRoom *current = mpm.currentRoom;
+        if (current && [current.roomId isEqualToString:room.roomId]) {
+            [mpm disconnectCurrentRoom];
+            [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"已断开连接"];
+        } else {
+            [self dispatchMultiplayerEvent:@"onMultiplayerProgress" message:@"开始连接房间…"];
+            __weak typeof(self) weakSelf = self;
+            [mpm connectToRoom:room completion:^(BOOL success, NSError * _Nullable error) {
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                if (success) {
+                    [strongSelf dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"房间已连接"];
+                } else {
+                    NSString *msg = error.localizedDescription ?: @"连接失败";
+                    [strongSelf dispatchMultiplayerEvent:@"onMultiplayerStatus" message:msg];
+                }
+                [strongSelf dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+            }];
+        }
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"disconnect"]) {
+        [[MultiplayerManager sharedManager] disconnectCurrentRoom];
+        [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"已断开连接"];
+        [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"promptJoin"]) {
+        [self promptForJoinCode];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"promptCreate"]) {
+        [self promptForCreateRoom];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"share"]) {
+        MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+        MultiplayerRoom *room = mpm.currentRoom;
+        if (!room) return @{ @"ok": @NO, @"error": @"当前没有已连接的房间" };
+        NSString *code = [mpm generateShareCodeForRoom:room];
+        NSString *text = [mpm shareTextForRoom:room];
+        UIPasteboard.generalPasteboard.string = text.length > 0 ? text : code;
+        return @{ @"ok": @YES, @"code": code, @"text": text };
+    }
+    if ([service isEqualToString:@"multiplayer"] && [method isEqualToString:@"delete"]) {
+        NSInteger idx = [args[@"index"] integerValue];
+        MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+        NSArray<MultiplayerRoom *> *rooms = mpm.savedRooms;
+        if (idx < 1 || idx > (NSInteger)rooms.count) {
+            return @{ @"ok": @NO, @"error": @"房间索引无效" };
+        }
+        MultiplayerRoom *room = rooms[idx - 1];
+        MultiplayerRoom *current = mpm.currentRoom;
+        if (current && [current.roomId isEqualToString:room.roomId]) {
+            [mpm disconnectCurrentRoom];
+        }
+        [mpm removeRoom:room.roomId];
+        [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+        return @{ @"ok": @YES };
+    }
     NSLog(@"[PLUIShell] unknown lua service %@.%@", service, method);
     return @{ @"ok": @NO };
+}
+
+- (void)dispatchMultiplayerEvent:(NSString *)event message:(nullable NSString *)message {
+    if (!self.runtime) return;
+    NSMutableDictionary *payload = [NSMutableDictionary dictionary];
+    if (message) payload[@"message"] = message;
+    [self.runtime dispatchEvent:event arguments:@[payload]];
+}
+
+- (void)promptForJoinCode {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"加入房间"
+                                                                   message:@"粘贴房主提供的分享代码"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"分享代码 / Network ID";
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"加入" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *code = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (code.length == 0) return;
+        MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+        MultiplayerRoom *room = [mpm parseShareCode:code];
+        if (!room) {
+            // 兜底：如果分享码解析失败，尝试当作 Network ID 创建房间并连接
+            if ([mpm isValidNetworkId:code]) {
+                room = [[MultiplayerRoom alloc] initWithId:nil
+                                                      name:[NSString stringWithFormat:@"房间 %@", [code substringToIndex:8]]
+                                                 networkId:code
+                                                    hostIP:@""
+                                                  hostPort:@"25565"];
+                room.role = MultiplayerRoomRoleHost;
+            } else {
+                [strongSelf dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"分享代码无效"];
+                return;
+            }
+        }
+        [mpm addRoom:room];
+        [strongSelf dispatchMultiplayerEvent:@"onMultiplayerProgress" message:@"正在加入房间…"];
+        __weak typeof(strongSelf) weakSelf2 = strongSelf;
+        [mpm connectToRoom:room completion:^(BOOL success, NSError * _Nullable error) {
+            __strong typeof(weakSelf2) strongSelf2 = weakSelf2;
+            if (!strongSelf2) return;
+            if (success) {
+                [strongSelf2 dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"房间已连接"];
+            } else {
+                [strongSelf2 dispatchMultiplayerEvent:@"onMultiplayerStatus" message:(error.localizedDescription ?: @"连接失败")];
+            }
+            [strongSelf2 dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptForCreateRoom {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"创建房间"
+                                                                   message:@"输入 ZeroTier Network ID（16 位十六进制）"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"例如：1a2b3c4d5e6f7g8h";
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"房间名称（可选）";
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *networkId = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].lowercaseString;
+        NSString *name = [alert.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (networkId.length == 0) return;
+        MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+        if (![mpm isValidNetworkId:networkId]) {
+            [strongSelf dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"Network ID 格式无效"];
+            return;
+        }
+        if (name.length == 0) name = [NSString stringWithFormat:@"房间 %@", [networkId substringToIndex:8]];
+        MultiplayerRoom *room = [[MultiplayerRoom alloc] initWithId:nil
+                                                              name:name
+                                                         networkId:networkId
+                                                            hostIP:@""
+                                                          hostPort:@"25565"];
+        room.role = MultiplayerRoomRoleHost;
+        [mpm addRoom:room];
+        [strongSelf dispatchMultiplayerEvent:@"onMultiplayerProgress" message:@"正在创建并连接房间…"];
+        __weak typeof(strongSelf) weakSelf2 = strongSelf;
+        [mpm connectToRoom:room completion:^(BOOL success, NSError * _Nullable error) {
+            __strong typeof(weakSelf2) strongSelf2 = weakSelf2;
+            if (!strongSelf2) return;
+            if (success) {
+                [strongSelf2 dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"房间已创建并连接"];
+            } else {
+                [strongSelf2 dispatchMultiplayerEvent:@"onMultiplayerStatus" message:(error.localizedDescription ?: @"连接失败")];
+            }
+            [strongSelf2 dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - MultiplayerManagerDelegate（把原生层状态/进度转发给 Lua 联机页）
+
+- (void)multiplayerNodeOnline {
+    [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"ZeroTier 节点已上线"];
+    [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+}
+
+- (void)multiplayerNodeOffline {
+    [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"ZeroTier 节点已离线"];
+    [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+}
+
+- (void)multiplayerRoomConnected:(MultiplayerRoom *)room {
+    NSString *msg = [NSString stringWithFormat:@"%@ 已连接", room.name.length > 0 ? room.name : @"房间"];
+    [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:msg];
+    [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+}
+
+- (void)multiplayerRoom:(MultiplayerRoom *)room didFailWithError:(NSError *)error {
+    NSString *msg = error.localizedDescription.length > 0 ? error.localizedDescription : @"连接失败";
+    [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:msg];
+    [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
+}
+
+- (void)multiplayerFrameworkAvailabilityChecked:(BOOL)available {
+    NSString *msg = available ? @"ZeroTier 框架可用" : @"ZeroTier 框架不可用（stub 模式）";
+    [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:msg];
+}
+
+- (void)multiplayerConnectionProgress:(NSString *)message {
+    [self dispatchMultiplayerEvent:@"onMultiplayerProgress" message:message];
 }
 
 - (void)showInitialPage {
@@ -771,19 +1011,31 @@
     return list;
 }
 
-// 已保存联机房间（{name,onwer,networkId,hostIP,mode}），供联机页列表展示。
+// 已保存联机房间（含状态与当前连接标识），供联机页列表展示。
 - (NSArray<NSDictionary *> *)serverStateList {
     NSMutableArray *list = [NSMutableArray array];
     MultiplayerManager *mpm = [MultiplayerManager sharedManager];
+    MultiplayerRoom *current = mpm.currentRoom;
     for (MultiplayerRoom *room in mpm.savedRooms) {
         if (![room isKindOfClass:MultiplayerRoom.class]) continue;
+        NSString *status = @"未连接";
+        switch (room.status) {
+            case MultiplayerRoomStatusConnecting: status = @"连接中"; break;
+            case MultiplayerRoomStatusConnected:  status = @"已连接"; break;
+            case MultiplayerRoomStatusError:      status = @"连接失败"; break;
+            default: status = @"未连接"; break;
+        }
+        BOOL isCurrent = (current && [current.roomId isEqualToString:room.roomId]);
         [list addObject:@{
+            @"roomId": room.roomId ?: @"",
             @"name": room.name ?: @"",
             @"owner": room.ownerName ?: @"",
             @"networkId": room.networkId ?: @"",
             @"hostIP": room.hostIP ?: @"",
             @"hostPort": room.hostPort ?: @"",
             @"mode": (room.role == MultiplayerRoomRoleHost) ? @"host" : @"guest",
+            @"status": status,
+            @"isCurrent": @(isCurrent),
         }];
     }
     return list;
