@@ -70,6 +70,13 @@ typedef NS_ENUM(NSInteger, MultiplayerRoomRole) {
 @property (nonatomic, copy) NSString *ownerName;       // 房主名称
 @property (nonatomic, strong) NSDate *createdAt;       // 创建时间
 @property (nonatomic, strong) NSDate *lastConnectedAt; // 上次连接时间
+
+/// 便捷初始化方法（供 UI 层创建/加入房间）
+- (instancetype)initWithId:(nullable NSString *)roomId
+                      name:(NSString *)name
+                 networkId:(NSString *)networkId
+                    hostIP:(NSString *)hostIP
+                  hostPort:(NSString *)hostPort;
 @end
 
 /// 联机状态变化通知代理
