@@ -71,6 +71,7 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [MultiplayerManager sharedManager].delegate = nil;
 }
 
 // 首个真实布局完成后通知 Lua（onLayout）：游标等依赖实际 frame 的定位需在布局后执行，
@@ -690,6 +691,7 @@
         if (current && [current.roomId isEqualToString:room.roomId]) {
             [mpm disconnectCurrentRoom];
             [self dispatchMultiplayerEvent:@"onMultiplayerStatus" message:@"已断开连接"];
+            [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
         } else {
             [self dispatchMultiplayerEvent:@"onMultiplayerProgress" message:@"开始连接房间…"];
             __weak typeof(self) weakSelf = self;
