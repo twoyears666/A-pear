@@ -29,6 +29,9 @@
 #import "MultiplayerViewController.h"
 #import "PLUIMoreViewController.h"
 #import "MultiplayerManager.h"
+#import "installer/modpack/ModrinthAPI.h"
+#import "installer/modpack/CurseForgeAPI.h"
+#import "ModVersion.h"
 #import "AI/AIViewController.h"
 #import "AI/AiSessionStore.h"
 #import "authenticator/BaseAuthenticator.h"
@@ -53,6 +56,10 @@
 @property (nonatomic, copy, nullable) NSString *currentLuaPage;
 /// 首个布局完成是否已向 Lua 派发 onLayout（游标等依赖真实 frame 的定位需在布局后执行）。
 @property (nonatomic, assign) BOOL didDispatchOnLayout;
+/// 社区资源（Mod/资源包/光影/整合包）当前下载任务；用于进度播报。
+@property (nonatomic, strong, nullable) NSURLSessionDownloadTask *communityDownloadTask;
+@property (nonatomic, strong, nullable) NSTimer *communityPublishTimer;
+@property (nonatomic, copy, nullable) NSString *communityDownloadCategory;
 @end
 
 @implementation PLUIShellViewController
@@ -748,6 +755,198 @@
         [self dispatchMultiplayerEvent:@"onMultiplayerRooms" message:nil];
         return @{ @"ok": @YES };
     }
+    // ---- 社区资源（Mod / 整合包 / 数据包 / 资源包 / 光影包）搜索与下载 ----
+    if ([service isEqualToString:@"community"] && [method isEqualToString:@"sources"]) {
+        NSMutableArray *sources = [NSMutableArray array];
+        [sources addObject:@{@"id": @"modrinth", @"name": @"Modrinth"}];
+        if ([CurseForgeAPI isAPIKeyConfigured]) {
+            [sources addObject:@{@"id": @"curseforge", @"name": @"CurseForge"}];
+        }
+        return @{ @"ok": @YES, @"items": sources };
+    }
+    if ([service isEqualToString:@"community"] && [method isEqualToString:@"categories"]) {
+        return @{ @"ok": @YES, @"items": @[
+            @{@"id": @"mod", @"name": @"Mod"},
+            @{@"id": @"modpack", @"name": @"整合包"},
+            @{@"id": @"datapack", @"name": @"数据包"},
+            @{@"id": @"resourcepack", @"name": @"资源包"},
+            @{@"id": @"shader", @"name": @"光影包"}
+        ]};
+    }
+    if ([service isEqualToString:@"community"] && [method isEqualToString:@"search"]) {
+        NSString *source = args[@"source"] ?: @"modrinth";
+        NSString *category = args[@"category"] ?: @"mod";
+        NSString *keyword = args[@"keyword"] ?: @"";
+        NSNumber *limit = args[@"limit"] ?: @10;
+        __weak typeof(self) weakSelf = self;
+        void (^completion)(NSArray *, NSError *) = ^(NSArray *results, NSError *error) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (error) {
+                [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:error.localizedDescription items:nil];
+            } else {
+                [strongSelf dispatchCommunityEvent:@"onCommunityResults" message:nil items:results];
+            }
+        };
+        if ([source isEqualToString:@"modrinth"]) {
+            [[ModrinthAPI sharedInstance] searchModWithFilters:@{
+                @"projectType": category,
+                @"query": keyword,
+                @"limit": limit
+            } completion:completion];
+        } else if ([source isEqualToString:@"curseforge"] && [CurseForgeAPI isAPIKeyConfigured]) {
+            [[CurseForgeAPI sharedInstance] searchModWithFilters:@{
+                @"projectType": category,
+                @"name": keyword,
+                @"limit": limit
+            } completion:completion];
+        } else {
+            completion(nil, [NSError errorWithDomain:@"CommunityAPI" code:400 userInfo:@{NSLocalizedDescriptionKey: @"不支持的搜索源或未配置API Key"}]);
+        }
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"community"] && [method isEqualToString:@"versions"]) {
+        NSString *source = args[@"source"] ?: @"modrinth";
+        NSString *projectId = args[@"projectId"] ?: @"";
+        NSString *category = args[@"category"] ?: @"mod";
+        if (projectId.length == 0) {
+            return @{ @"ok": @NO, @"error": @"projectId is required" };
+        }
+        __weak typeof(self) weakSelf = self;
+        void (^dispatchVersions)(NSArray<ModVersion *> *) = ^(NSArray<ModVersion *> *versions) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSMutableArray *versionItems = [NSMutableArray array];
+            for (ModVersion *v in versions) {
+                NSMutableDictionary *pf = [v.primaryFile mutableCopy] ?: [NSMutableDictionary dictionary];
+                [versionItems addObject:@{
+                    @"name": v.name ?: @"",
+                    @"versionNumber": v.versionNumber ?: @"",
+                    @"mcVersion": v.gameVersions.firstObject ?: @"",
+                    @"downloadUrl": pf[@"url"] ?: @"",
+                    @"fileName": pf[@"filename"] ?: pf[@"fileName"] ?: @"",
+                    @"size": v.fileSize ?: @0,
+                    @"sha1": pf[@"hashes"][@"sha1"] ?: @"",
+                    @"versionType": v.versionType ?: @""
+                }];
+            }
+            [strongSelf dispatchCommunityEvent:@"onCommunityVersions" message:nil items:versionItems];
+        };
+        if ([source isEqualToString:@"modrinth"]) {
+            [[ModrinthAPI sharedInstance] getVersionsForModWithID:projectId completion:^(NSArray<ModVersion *> *versions, NSError *error) {
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                if (error) {
+                    [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:error.localizedDescription items:nil];
+                } else {
+                    dispatchVersions(versions);
+                }
+            }];
+        } else if ([source isEqualToString:@"curseforge"] && [CurseForgeAPI isAPIKeyConfigured]) {
+            // CurseForgeAPI.getVersionsForModWithID 内部硬编码 projectType=mod，对 zip 类资源会过滤掉文件，
+            // 因此直接调用 loadDetailsOfMod:completion: 并传入正确分类。
+            NSMutableDictionary *item = [@{@"id": projectId, @"projectType": category} mutableCopy];
+            [[CurseForgeAPI sharedInstance] loadDetailsOfMod:item completion:^(NSError *error) {
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                if (error) {
+                    [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:error.localizedDescription items:nil];
+                } else {
+                    dispatchVersions(item[@"versions"] ?: @[]);
+                }
+            }];
+        } else {
+            return @{ @"ok": @NO, @"error": @"不支持的搜索源或未配置API Key" };
+        }
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"community"] && [method isEqualToString:@"download"]) {
+        NSString *source = args[@"source"] ?: @"";
+        NSString *category = args[@"category"] ?: @"mod";
+        NSString *title = args[@"title"] ?: @"";
+        NSString *urlString = args[@"downloadUrl"] ?: @"";
+        NSString *fileName = args[@"fileName"] ?: @"";
+        NSString *projectId = args[@"projectId"] ?: @"";
+        NSString *versionName = args[@"versionName"] ?: @"";
+        __weak typeof(self) weakSelf = self;
+        void (^downloadVersion)(ModVersion *) = ^(ModVersion *v) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSMutableDictionary *pf = [v.primaryFile mutableCopy] ?: [NSMutableDictionary dictionary];
+            NSString *url = pf[@"url"] ?: @"";
+            NSString *fn = pf[@"filename"] ?: pf[@"fileName"] ?: @"";
+            if (url.length == 0) {
+                [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:@"未找到下载链接" items:nil];
+                return;
+            }
+            [strongSelf startCommunityDownloadFromURL:url fileName:fn category:category projectTitle:(title.length > 0 ? title : fn)];
+        };
+        if (urlString.length > 0) {
+            [self startCommunityDownloadFromURL:urlString fileName:(fileName.length > 0 ? fileName : urlString.lastPathComponent) category:category projectTitle:(title.length > 0 ? title : fileName)];
+            return @{ @"ok": @YES };
+        }
+        if (projectId.length == 0) {
+            return @{ @"ok": @NO, @"error": @"需要 downloadUrl 或 projectId" };
+        }
+        if ([source isEqualToString:@"modrinth"]) {
+            [[ModrinthAPI sharedInstance] getVersionsForModWithID:projectId completion:^(NSArray<ModVersion *> *versions, NSError *error) {
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                if (error || versions.count == 0) {
+                    [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:(error.localizedDescription ?: @"未找到版本") items:nil];
+                    return;
+                }
+                ModVersion *match = nil;
+                for (ModVersion *v in versions) {
+                    if ([v.name isEqualToString:versionName] || [v.versionNumber isEqualToString:versionName]) { match = v; break; }
+                }
+                if (!match) match = versions.firstObject;
+                downloadVersion(match);
+            }];
+        } else if ([source isEqualToString:@"curseforge"] && [CurseForgeAPI isAPIKeyConfigured]) {
+            NSMutableDictionary *item = [@{@"id": projectId, @"projectType": category} mutableCopy];
+            [[CurseForgeAPI sharedInstance] loadDetailsOfMod:item completion:^(NSError *error) {
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                if (error) {
+                    [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:error.localizedDescription items:nil];
+                    return;
+                }
+                NSArray<ModVersion *> *versions = item[@"versions"] ?: @[];
+                ModVersion *match = nil;
+                for (ModVersion *v in versions) {
+                    if ([v.name isEqualToString:versionName] || [v.versionNumber isEqualToString:versionName]) { match = v; break; }
+                }
+                if (!match) match = versions.firstObject;
+                downloadVersion(match);
+            }];
+        } else {
+            return @{ @"ok": @NO, @"error": @"不支持的搜索源或未配置API Key" };
+        }
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"community"] && [method isEqualToString:@"promptKeyword"]) {
+        NSString *category = args[@"category"] ?: @"mod";
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"搜索关键词"
+                                                                       message:[NSString stringWithFormat:@"输入要搜索的 %@ 关键词", category]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+            textField.placeholder = @"关键词";
+            textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            textField.autocorrectionType = UITextAutocorrectionTypeNo;
+            textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+        }];
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSString *keyword = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            [strongSelf dispatchCommunityEvent:@"onCommunityKeyword" message:nil items:keyword.length > 0 ? @[keyword] : @[]];
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return @{ @"ok": @YES };
+    }
     NSLog(@"[PLUIShell] unknown lua service %@.%@", service, method);
     return @{ @"ok": @NO };
 }
@@ -757,6 +956,98 @@
     NSMutableDictionary *payload = [NSMutableDictionary dictionary];
     if (message) payload[@"message"] = message;
     [self.runtime dispatchEvent:event arguments:@[payload]];
+}
+
+- (void)dispatchCommunityEvent:(NSString *)event message:(nullable NSString *)message items:(nullable NSArray *)items {
+    if (!self.runtime) return;
+    NSMutableDictionary *payload = [NSMutableDictionary dictionary];
+    if (message) payload[@"message"] = message;
+    if (items) payload[@"items"] = items;
+    [self.runtime dispatchEvent:event arguments:@[payload]];
+}
+
+- (NSString *)communityFolderForCategory:(NSString *)category {
+    NSString *profile = PLProfiles.current.selectedProfileName ?: @"";
+    NSString *gameDir = [PLProfiles resolvedGameDirectoryForProfileName:profile] ?: @"";
+    if (gameDir.length == 0) {
+        gameDir = [NSString stringWithFormat:@"%s/.minecraft", getenv("POJAV_HOME")];
+    }
+    NSString *subfolder;
+    if ([category isEqualToString:@"mod"]) subfolder = @"mods";
+    else if ([category isEqualToString:@"shader"]) subfolder = @"shaderpacks";
+    else if ([category isEqualToString:@"resourcepack"]) subfolder = @"resourcepacks";
+    else subfolder = nil;
+    if (subfolder) {
+        return [gameDir stringByAppendingPathComponent:subfolder];
+    }
+    // 数据包 / 整合包没有固定实例子目录，先落到 downloads/<category>
+    return [NSString stringWithFormat:@"%s/downloads/%@", getenv("POJAV_HOME"), category];
+}
+
+- (void)startCommunityDownloadFromURL:(NSString *)urlString fileName:(NSString *)fileName category:(NSString *)category projectTitle:(NSString *)title {
+    [self.communityDownloadTask cancel];
+    [self stopCommunityDownloadPublishTimer];
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        [self dispatchCommunityEvent:@"onCommunityStatus" message:@"下载链接无效" items:nil];
+        return;
+    }
+    NSString *folder = [self communityFolderForCategory:category];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:folder]) {
+        [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    NSString *destination = [folder stringByAppendingPathComponent:fileName.length > 0 ? fileName : url.lastPathComponent];
+    [fm removeItemAtPath:destination error:nil];
+    self.communityDownloadCategory = category;
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf stopCommunityDownloadPublishTimer];
+        if (error) {
+            [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:error.localizedDescription items:nil];
+            return;
+        }
+        NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+        if (http.statusCode >= 400) {
+            [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:[NSString stringWithFormat:@"下载失败 (%ld)", (long)http.statusCode] items:nil];
+            return;
+        }
+        NSError *moveError = nil;
+        [fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:destination] error:&moveError];
+        if (moveError) {
+            [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:moveError.localizedDescription items:nil];
+        } else {
+            [strongSelf dispatchCommunityEvent:@"onCommunityStatus" message:[NSString stringWithFormat:@"%@ 已下载", title] items:nil];
+            [strongSelf dispatchCommunityEvent:@"onCommunityProgress" message:@"完成" items:@[@{@"finished": @YES, @"path": destination}]];
+        }
+    }];
+    self.communityDownloadTask = task;
+    [task resume];
+    [self startCommunityDownloadPublishTimer];
+}
+
+- (void)startCommunityDownloadPublishTimer {
+    [self.communityPublishTimer invalidate];
+    self.communityPublishTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(publishCommunityDownloadProgress) userInfo:nil repeats:YES];
+}
+
+- (void)stopCommunityDownloadPublishTimer {
+    [self.communityPublishTimer invalidate];
+    self.communityPublishTimer = nil;
+}
+
+- (void)publishCommunityDownloadProgress {
+    NSURLSessionDownloadTask *task = self.communityDownloadTask;
+    if (!task) return;
+    int64_t total = task.countOfBytesExpectedToReceive;
+    int64_t received = task.countOfBytesReceived;
+    double frac = (total > 0) ? (double)received / (double)total : 0;
+    if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+    BOOL finished = (total > 0 && received >= total);
+    if (finished) [self stopCommunityDownloadPublishTimer];
+    [self dispatchCommunityEvent:@"onCommunityProgress" message:[NSString stringWithFormat:@"下载中 %.0f%%", frac * 100] items:@[@{@"downloaded": @(received), @"total": @(total), @"finished": @(finished)}]];
 }
 
 - (void)promptForJoinCode {
