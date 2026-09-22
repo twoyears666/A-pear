@@ -164,7 +164,7 @@ static int PLLuaBridgeLog(lua_State *L) {
         luaL_addstring(&buffer, s ? s : "nil");
     }
     luaL_pushresult(&buffer);
-    NSLog(@"[UIPack:%@] %s", PLLuaBridgeSelf(L).packIdentifier, lua_tostring(L, -1));
+    PLUIClickLog(@"[Lua:%@] %s", PLLuaBridgeSelf(L).packIdentifier, lua_tostring(L, -1));
     return 0;
 }
 
@@ -461,7 +461,11 @@ lua_pushcfunction(_L, PLLuaBridgeCall);
 - (BOOL)dispatchEvent:(NSString *)name arguments:(NSArray<id> *)arguments {
     if (!_L || ![name isKindOfClass:NSString.class]) return NO;
     lua_getglobal(_L, [name UTF8String]);
-    if (!lua_isfunction(_L, -1)) {
+    BOOL hadHandler = lua_isfunction(_L, -1);
+    PLUIClickLog(@"[EVT] dispatch=%@ args=%lu handler=%d first=%@",
+                 name, (unsigned long)arguments.count, hadHandler ? 1 : 0,
+                 arguments.firstObject ?: @"");
+    if (!hadHandler) {
         lua_pop(_L, 1);
         return NO;
     }

@@ -619,6 +619,10 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 }
 
 - (void)nodeTapped:(id)sender {
+    PLUIClickLog(@"[NODE] nodeTapped nodeId=%@ hasHandler=%d frame=%@ hit=%@ hidden=%d",
+                 self.nodeId ?: @"", self.tapHandler ? 1 : 0,
+                 NSStringFromCGRect(self.frame), NSStringFromCGRect(self.bounds),
+                 self.hidden);
     if (self.tapHandler) self.tapHandler(self);
 }
 

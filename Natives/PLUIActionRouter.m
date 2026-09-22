@@ -33,6 +33,7 @@ static NSSet<NSString *> *PLUIActionReservedForLaunchService(void) {
 
 - (void)performAction:(NSString *)action fromViewController:(nullable UIViewController *)presenter {
     if (![action isKindOfClass:NSString.class] || action.length == 0) return;
+    PLUIClickLog(@"[ACTION] perform=%@", action);
 
     // 启动链路 = 唯一特定于功能的特例（用户明确的豁免，禁止改动）。
     if ([action isEqualToString:@"launch"]) {

@@ -181,6 +181,8 @@
         node.tapHandler = ^(PLUINodeView *tapped) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
+            PLUIClickLog(@"[TAP] node=%@ action=%@ -> performAction(done) + dispatch onClick",
+                         tapped.nodeId ?: @"", tapped.action ?: @"");
             if (tapped.action.length > 0) {
                 [PLUIActionRouter.sharedRouter performAction:tapped.action
                                          fromViewController:strongSelf];
