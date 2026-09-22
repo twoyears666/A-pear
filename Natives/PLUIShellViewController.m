@@ -1,6 +1,7 @@
 #import "PLUIShellViewController.h"
 #import "PLUIPackManager.h"
 #import "PLLuaRuntime.h"
+#import "PLUIClickLog.h"
 #import "PLUILayoutEngine.h"
 #import "PLUINodeView.h"
 #import "PLUIActionRouter.h"

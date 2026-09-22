@@ -3,6 +3,7 @@
 // header-only：多个 TU 各自持有一份 static inline 实现，写入同一文件，无需改 CMake 源列表。
 #import <Foundation/Foundation.h>
 #import <stdlib.h>
+#import <stdarg.h>
 
 static inline void PLUIClickLog(NSString *format, ...) {
     @autoreleasepool {

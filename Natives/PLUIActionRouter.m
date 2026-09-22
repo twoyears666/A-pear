@@ -1,5 +1,6 @@
 #import "PLUIActionRouter.h"
 #import "LauncherLaunchService.h"
+#import "PLUIClickLog.h"
 
 /// 五类通用动作的专用通知名（由壳统一分发，引擎零页面名）。
 static NSString * const PLUIActionNavigateNotif  = @"PLUIActionNavigate";   // object = page token

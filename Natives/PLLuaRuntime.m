@@ -1,5 +1,6 @@
 #import "PLLuaRuntime.h"
 #import "PLUIPackManager.h"
+#import "PLUIClickLog.h"
 #import <stdlib.h>
 #import "lua.h"
 #import "lauxlib.h"

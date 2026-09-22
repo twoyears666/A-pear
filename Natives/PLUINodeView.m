@@ -1,5 +1,6 @@
 #import "PLUINodeView.h"
 #import "PLThemeManager.h"
+#import "PLUIClickLog.h"
 
 /// 无固定尺寸标记（NAN 表示按内容/权重布局）。
 static CGFloat const PLUINodeAuto = NAN;
