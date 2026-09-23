@@ -95,7 +95,7 @@ class UIPackContracts(unittest.TestCase):
         for cmd in ("setText", "setTextColor", "setImage", "setVisible", "setEnabled", "getText"):
             self.assertIn(cmd, LUA_RUNTIME)
         # prelude 必须提供全部节点构建器与 launcher 封装
-        for kind in ("'row'", "'column'", "'button'", "'text'", "'image'", "'spacer'",
+        for kind in ("'row'", "'column'", "'button'", "'text'", "'image'", "'input'", "'spacer'",
                      "'divider'", "'content'", "'nav'", "'panel'", "'tileGrid'"):
             self.assertIn(kind, LUA_RUNTIME)
         for name in ("ui.dimen", "launcher.view", "launcher.action", "launcher.log"):
@@ -138,6 +138,26 @@ class UIPackContracts(unittest.TestCase):
         self.assertIn('@"responsive"', NODE_VIEW)
         self.assertIn('@"visibleWhen"', NODE_VIEW)
         self.assertIn('@"phone"', NODE_VIEW)
+
+    def test_input_primitive_is_supported(self):
+        # 文本输入框原语（input）：可编辑单行输入，供 PCL II 安装预览卡版本名称输入
+        self.assertIn('@"input"', NODE_VIEW)                    # 节点白名单
+        self.assertIn("- (void)buildInput:", NODE_VIEW)         # 叶子构建器
+        self.assertIn("UITextField", NODE_VIEW)                 # 原生控件
+        self.assertIn("UITextField *textField", NODE_VIEW)      # 属性
+        self.assertIn("[self pluiVHUnit] * 4.5", NODE_VIEW)     # 自动布局默认高
+        # 读写/颜色/禁用必须覆盖文本输入框（脚本侧 setText/getText/setEnabled 落点）
+        self.assertIn("self.textField.text = text", NODE_VIEW)  # updateText
+        self.assertIn("if (self.textField) return self.textField.text", NODE_VIEW)  # currentText
+        self.assertIn("self.textField.enabled = enabled", NODE_VIEW)  # updateEnabled
+
+    def test_scroll_invalidate_through_content(self):
+        # 滚动修复：页内后代运行时代理显隐后，必须沿链冒泡重排 content 内容区，
+        # 使 contentSize 用「当前可见后代」重新量高，避免内容超出却翻不动。
+        self.assertIn("pluiInvalidateThroughContent", NODE_VIEW)
+        self.assertIn("((PLUINodeView *)v).contentArea) break", NODE_VIEW)
+        # updateVisible 必须调用该冒泡（而不是只触发父容器局部重排）
+        self.assertIn("[self pluiInvalidateThroughContent];", NODE_VIEW)
 
 
 class ShellContracts(unittest.TestCase):

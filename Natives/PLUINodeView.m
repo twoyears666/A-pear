@@ -143,7 +143,7 @@ static BOOL PLUIIsKnownKind(NSString *kind) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         kinds = [NSSet setWithArray:@[@"row", @"column", @"button", @"text", @"image",
-                                      @"spacer", @"divider", @"content", @"nav", @"panel",
+                                      @"input", @"spacer", @"divider", @"content", @"nav", @"panel",
                                       @"tileGrid", @"split_column", @"vertical_flow",
                                       @"card", @"row_item"]];
     });
@@ -217,8 +217,10 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 /// content：纵向滚动容器（通用滚动机制；所有 Lua 页子树都挂其内，contentSize 跟随当前页内容高度）。
 @property (nonatomic, strong, nullable) UIScrollView *contentScrollView;
 @property (nonatomic, strong) UILabel *textLabel;
-@property (nonatomic, strong) UIButton *button;
-@property (nonatomic, strong) UIImageView *contentImageView;
+    @property (nonatomic, strong) UIButton *button;
+    @property (nonatomic, strong) UIImageView *contentImageView;
+    // 文本输入框原语（input）：可编辑单行输入（PCL II 安装预览卡「版本名称」）。
+    @property (nonatomic, strong, nullable) UITextField *textField;
 // 通用 hover：节点设置 hoverColor 后，按下/滑入呈浅蓝高亮，松手/滑出恢复原底色。
 @property (nonatomic, strong, nullable) UIColor *hoverBkgColor;
 @property (nonatomic, strong, nullable) UIColor *normalBkgColor;
@@ -461,6 +463,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
         [self buildButton:node];
     } else if ([kind isEqualToString:@"text"]) {
         [self buildText:node];
+    } else if ([kind isEqualToString:@"input"]) {
+        [self buildInput:node];
     } else if ([kind isEqualToString:@"image"]) {
         [self buildImage:node compact:compact];
     } else if ([kind isEqualToString:@"spacer"]) {
@@ -564,6 +568,34 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     _textLabel.textColor = PLUIResolveColor(style[@"color"], [UIColor labelColor]);
     _textLabel.adjustsFontForContentSizeCategory = YES;
     [self addSubview:_textLabel];
+}
+
+// input 原语：可编辑单行文本输入框（PCL II 安装预览卡「版本名称」）。
+// text=初始值 / placeholder=提示文案；style 支持 color(文字色) / font。
+- (void)buildInput:(NSDictionary *)node {
+    _textField = [UITextField new];
+    _textField.translatesAutoresizingMaskIntoConstraints = YES;
+    NSDictionary *style = [node[@"style"] isKindOfClass:NSDictionary.class] ? node[@"style"] : @{};
+    id initial = node[@"text"];
+    _textField.text = [initial isKindOfClass:NSString.class] ? initial : @"";
+    id ph = node[@"placeholder"];
+    if ([ph isKindOfClass:NSString.class] && [(NSString *)ph length] > 0) {
+        _textField.placeholder = ph;
+    }
+    _textField.font = [self pluiFontFromStyle:style];
+    _textField.textColor = PLUIResolveColor(style[@"color"], [UIColor labelColor]);
+    _textField.borderStyle = UITextBorderStyleNone;
+    _textField.backgroundColor = [UIColor clearColor];
+    // 清除按钮 + 回车收起键盘（输入框自身处理触摸，不额外注册点击）。
+    _textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _textField.returnKeyType = UIReturnKeyDone;
+    [_textField addTarget:self action:@selector(inputDone:) forControlEvents:UIControlEventEditingDidEndOnExit];
+    [self addSubview:_textField];
+}
+
+- (void)inputDone:(id)sender {
+    // 回车收起键盘；当前值由 launcher.view(id):getText() 在「开始安装」时读取。
+    [self.textField resignFirstResponder];
 }
 
 - (void)buildImage:(NSDictionary *)node compact:(BOOL)compact {
@@ -687,6 +719,12 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     // ——按钮/文字整体不可见，只剩容器背景色（真机首渲即暴露）。
     if (self.textLabel) self.textLabel.frame = self.bounds;
     if (self.contentImageView) self.contentImageView.frame = self.bounds;
+    // 输入框铺满节点，左右留出内边距给文字/光标起始位置（垂直居中）。
+    if (self.textField) {
+        CGFloat inset = [self pluiVHUnit] * 1.2;
+        self.textField.frame = UIEdgeInsetsInsetRect(self.bounds,
+            UIEdgeInsetsMake(0, inset, 0, inset));
+    }
     // 按钮铺满节点：宽文字按钮（如 PCL2 启动按钮）与图标按钮都能正确渲染，
     // UIButton 自身负责图文内容居中。此前按 min(宽,高) 居中裁切文字按钮。
     if (self.button) self.button.frame = self.bounds;
@@ -872,6 +910,12 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
         }
         return CGSizeZero;
     }
+    // input 原语固有尺寸：尺寸由 pack 显式 height/width 决定，自动布局时给一个合理默认。
+    if (self.textField) {
+        CGFloat w = !isnan(self.fixedWidth) ? self.fixedWidth : [self pluiVHUnit] * 30;
+        CGFloat h = !isnan(self.fixedHeight) ? self.fixedHeight : [self pluiVHUnit] * 4.5;
+        return CGSizeMake(w, h);
+    }
     if ([self.kind isEqualToString:@"divider"]) return CGSizeMake(1, 1); // 主轴 1pt
     // 容器（row/column/nav/panel）：按子节点聚合测量，嵌套容器在父栈中拿到合理首选尺寸。
     // 此前容器返回 CGSizeZero，嵌套 row/column 在列/行里高度/宽度塌为 0。
@@ -924,6 +968,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 - (void)updateText:(NSString *)text {
     if (self.textLabel) {
         self.textLabel.text = text ?: @"";
+    } else if (self.textField) {
+        self.textField.text = text ?: @"";
     } else if (self.button) {
         [self.button setTitle:text forState:UIControlStateNormal];
     }
@@ -932,6 +978,7 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 
 - (NSString *)currentText {
     if (self.textLabel) return self.textLabel.text;
+    if (self.textField) return self.textField.text;
     if (self.button) return [self.button titleForState:UIControlStateNormal];
     return nil;
 }
@@ -946,11 +993,13 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     UIColor *color = PLUIResolveColor(colorSpec, nil);
     if (!color) return;
     if (self.textLabel) self.textLabel.textColor = color;
+    else if (self.textField) self.textField.textColor = color;
     else if (self.button) [self.button setTitleColor:color forState:UIControlStateNormal];
 }
 
 - (void)updateEnabled:(BOOL)enabled {
     if (self.button) self.button.enabled = enabled;
+    if (self.textField) self.textField.enabled = enabled;
 }
 
 - (void)updateVisible:(BOOL)visible {
@@ -958,6 +1007,21 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     // 隐藏节点在栈布局中坍缩，需让父容器重排（其余子节点重新瓜分主轴空间）
     [self.superview setNeedsLayout];
     [self setNeedsLayout];
+    // 滚动修复：页内后代显隐/重排会改变页面自然高度，但 content 的 contentSize 只在
+    // 自身重排时才重算。这里沿 superview 链向上冒泡，命中 content 内容区则标记其重排，
+    // 使其在下一布局周期用「当前可见的后代」重新量高——修复展开列表后内容超出却翻不动。
+    [self pluiInvalidateThroughContent];
+}
+
+/// 沿 superview 链冒泡 setNeedsLayout，直到并包含 content 内容区（含 content 自身）停止。
+/// 用于运行时代理显隐/增删后代后，让滚动容器重新测量页面高度。
+- (void)pluiInvalidateThroughContent {
+    UIView *v = self;
+    while (v) {
+        [v setNeedsLayout];
+        if ([v isKindOfClass:PLUINodeView.class] && ((PLUINodeView *)v).contentArea) break;
+        v = v.superview;
+    }
 }
 
 #pragma mark - content 内容区页切换（完全数据驱动）
