@@ -1284,15 +1284,30 @@
 - (NSDictionary *)currentState {
     BaseAuthenticator *auth = BaseAuthenticator.current;
     NSString *username = auth.authData[@"username"];
+    // 当前激活 UI 包信息（名称 + 版本，源自 manifest.json；动态数据不硬编码）。
+    NSDictionary *uiPack = [self activeUIPackState];
     return @{
         @"account": username ? @{@"name": username} : [NSNull null],
         @"version": @{@"name": PLProfiles.current.selectedProfileName ?: @""},
+        @"ui": uiPack ?: [NSNull null],
         @"profiles": [self profileStateList],
         @"servers": [self serverStateList],
         @"darkMode": @(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark),
         @"locale": [NSLocale currentLocale].localeIdentifier ?: @"",
         @"settings": [self launcherSettingsList],
     };
+}
+
+/// 读激活 UI 包的 manifest.json（名称 + 版本），供更多页「主题包信息卡」动态展示。
+- (nullable NSDictionary *)activeUIPackState {
+    PLUIPack *pack = PLUIPackManager.sharedManager.activePack;
+    if (!pack || !pack.rootPath.length) return nil;
+    NSDictionary *manifest = [PLUIPackManager.sharedManager
+        JSONDictionaryAtPath:[pack.rootPath stringByAppendingPathComponent:@"manifest.json"]];
+    NSString *name = [manifest[@"name"] isKindOfClass:NSString.class] ? manifest[@"name"] : pack.displayName;
+    NSString *version = [manifest[@"version"] isKindOfClass:NSString.class] ? manifest[@"version"] : @"";
+    if (!name.length && !version.length) return nil;
+    return @{ @"name": name ?: @"", @"version": version ?: @"" };
 }
 
 // 设置列表数据源（启动器拥有）：由 launcher.state.settings 提供给 UI 包渲染。

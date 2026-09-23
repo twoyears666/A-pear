@@ -45,6 +45,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 读取包的入口脚本源码（UTF-8）。文件缺失、超限（256KB）或解码失败返回 nil。
 - (nullable NSString *)mainLuaSourceForPack:(PLUIPack *)pack;
 
+/// 读取并解析指定路径的 JSON 文件；缺失或不是 JSON 字典返回 nil。
+/// （额外标注为 public：壳层需读取包 manifest 以向 UI 包提供名称/版本等动态元数据。）
+- (nullable NSDictionary *)JSONDictionaryAtPath:(NSString *)path;
+
 /// 导入的激活包根目录（$POJAV_HOME/uipack/active）。POJAV_HOME 未设置时为 nil。
 + (nullable NSString *)importedPackRoot;
 
