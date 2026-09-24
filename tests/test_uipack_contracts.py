@@ -159,6 +159,19 @@ class UIPackContracts(unittest.TestCase):
         # updateVisible 必须调用该冒泡（而不是只触发父容器局部重排）
         self.assertIn("[self pluiInvalidateThroughContent];", NODE_VIEW)
 
+    def test_runtime_append_wires_full_list_capability(self):
+        # 游戏下载页动态完整版本列表：三处必须贯通。
+        # 1) Lua prelude 暴露 launcher.view(id):append(children)
+        self.assertIn("function h:append(children)", LUA_RUNTIME)
+        # 2) PLUINodeView 提供运行时向容器追加子节点的实现，并冒泡重测滚动高度
+        self.assertIn("appendChildren:", NODE_VIEW)
+        self.assertIn("[self pluiInvalidateThroughContent];", NODE_VIEW)
+        # 3) 壳 viewCommandHandler 派发 append，并为新节点补挂点按手势与 onClick
+        self.assertIn('command isEqualToString:@"append"', SHELL_VC)
+        self.assertIn("appendChildren:argument", SHELL_VC)
+        self.assertIn("child.tapHandler", SHELL_VC)
+        self.assertIn('dispatchEvent:@"onClick" arguments:@[tapped.nodeId', SHELL_VC)
+
 
 class ShellContracts(unittest.TestCase):
     """M3e/M3f 双轨壳契约：新壳、动作白名单、SceneDelegate 杀开关、内置包。"""

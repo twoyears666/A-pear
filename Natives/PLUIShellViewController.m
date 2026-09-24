@@ -231,6 +231,22 @@
             if ([rect isKindOfClass:NSDictionary.class]) {
                 [node updateFrameRect:rect animated:animated];
             }
+        } else if ([command isEqualToString:@"append"]) {
+            // 游戏下载页动态完整版本列表：向容器末尾追加 node dict 子节点。
+            // 新节点不在初始化 enumerateNodes 中，需补挂点按手势与 onClick。
+            NSArray<PLUINodeView *> *added = [node appendChildren:argument];
+            for (PLUINodeView *child in added) {
+                [child attachTapGestureIfNeeded];
+                child.tapHandler = ^(PLUINodeView *tapped) {
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    if (!strongSelf) return;
+                    if (tapped.action.length > 0) {
+                        [PLUIActionRouter.sharedRouter performAction:tapped.action
+                                                 fromViewController:strongSelf];
+                    }
+                    [strongSelf.runtime dispatchEvent:@"onClick" arguments:@[tapped.nodeId ?: @""]];
+                };
+            }
         }
         return YES;
     };

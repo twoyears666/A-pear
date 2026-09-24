@@ -43,6 +43,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// 主轴上的内容需求（无权重且无固定尺寸时用于布局测量）。
 - (CGFloat)preferredMainSizeForCrossSize:(CGFloat)crossSize horizontal:(BOOL)horizontal;
 
+/// 运行时向容器末尾追加子节点（游戏下载页动态完整版本列表）：
+/// childNodes = node dict 数组（单个 node dict 也行）；返回实际生成并挂上的子节点。
+/// 追加后自动重排，并沿 superview 链冒泡到 content 滚动容器重测高度，使整列随内容增长可滚动。
+/// 调用方需为新节点挂 tapHandler / 点按手势（壳层 append 命令负责）。
+- (NSArray<PLUINodeView *> *)appendChildren:(nullable id)childNodes;
+
 /// 文本类节点的内容读写（launcher.view("id"):setText 的落点）。
 - (void)updateText:(nullable NSString *)text;
 - (nullable NSString *)currentText;

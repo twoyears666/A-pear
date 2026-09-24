@@ -225,6 +225,9 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 @property (nonatomic, strong, nullable) UIColor *hoverBkgColor;
 @property (nonatomic, strong, nullable) UIColor *normalBkgColor;
 @property (nonatomic, assign) BOOL hoverTracking;
+// 运行时 appendChildren 需要与整树一致的响应式/深浅色上下文，applyNode 时记录。
+@property (nonatomic, assign) BOOL compactTrait;
+@property (nonatomic, assign) BOOL darkTrait;
 @end
 
 @implementation PLUINodeView
@@ -298,6 +301,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 
     _kind = kind;
     _outerEdges = outerEdges;
+    _compactTrait = compact;
+    _darkTrait = dark;
     _nodeId = [node[@"id"] isKindOfClass:NSString.class] ? node[@"id"] : nil;
     _action = [node[@"action"] isKindOfClass:NSString.class] ? node[@"action"] : nil;
     _bind = [node[@"bind"] isKindOfClass:NSString.class] ? node[@"bind"] : nil;
@@ -502,6 +507,46 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
             [self addSubview:child];
         }
     }
+}
+
+/// 运行时向容器末尾追加子节点（游戏下载页动态完整版本列表）。
+/// 栈尾追加：主轴末侧外沿继承父容器尾侧，交叉轴两侧继承父容器自身决定。
+/// 追加后重排并沿 superview 链冒泡到 content 滚动容器重测高度（整列随内容增长可滚动）。
+- (NSArray<PLUINodeView *> *)appendChildren:(id)childNodes {
+    if (!childNodes) return @[];
+    NSArray *list = nil;
+    if ([childNodes isKindOfClass:NSArray.class]) {
+        list = (NSArray *)childNodes;
+    } else if ([childNodes isKindOfClass:NSDictionary.class]) {
+        list = @[childNodes];
+    } else {
+        return @[];
+    }
+    NSMutableArray<PLUINodeView *> *added = [NSMutableArray arrayWithCapacity:list.count];
+    NSUInteger count = list.count;
+    for (NSUInteger i = 0; i < count; i++) {
+        NSDictionary *node = list[i];
+        if (![node isKindOfClass:NSDictionary.class]) continue;
+        UIRectEdge childEdges = 0;
+        if (self.isHorizontalStack) {
+            childEdges |= (self.outerEdges & (UIRectEdgeTop | UIRectEdgeBottom));
+            if (i == count - 1) childEdges |= (self.outerEdges & UIRectEdgeRight);
+        } else {
+            childEdges |= (self.outerEdges & (UIRectEdgeLeft | UIRectEdgeRight));
+            if (i == count - 1) childEdges |= (self.outerEdges & UIRectEdgeBottom);
+        }
+        PLUINodeView *child = [[PLUINodeView alloc] init];
+        if ([child applyNode:node outerEdges:childEdges compact:self.compactTrait dark:self.darkTrait]) {
+            [self addSubview:child];
+            [added addObject:child];
+        }
+    }
+    if (added.count > 0) {
+        // 通知父容器重排（新子节点参与栈布局），并冒泡到 content 滚动容器重测高度。
+        [self setNeedsLayout];
+        [self pluiInvalidateThroughContent];
+    }
+    return added;
 }
 
 - (void)applyNavItems:(NSDictionary *)node compact:(BOOL)compact dark:(BOOL)dark {

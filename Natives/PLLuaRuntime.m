@@ -310,6 +310,7 @@ function h:setFrame(rect, animated) return __bridge.viewCmd(self._id, 'setFrame'
   function h:getFrame() return __bridge.viewGetFrame(self._id) end\n\
   function h:fade(v) return __bridge.viewCmd(self._id, 'fade', v ~= false) end\n\
   function h:getText() return __bridge.viewGetText(self._id) end\n\
+  function h:append(children) return __bridge.viewCmd(self._id, 'append', children) end\n\
   return h\n\
 end\n\
 ";
