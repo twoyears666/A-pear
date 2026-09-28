@@ -30,12 +30,42 @@
 #import "MultiplayerViewController.h"
 #import "PLUIMoreViewController.h"
 #import "MultiplayerManager.h"
+// 通用能力页（任何 UI 包按 token 调用，引擎零包特例）
+#import "WorldsManagerViewController.h"
+#import "ModpackExportViewController.h"
+#import "installer/ModLoaderInstallViewController.h"
+#import "ResourcePackService.h"
+#import "ResourcePackItem.h"
+#import "WorldService.h"
+#import "WorldItem.h"
+#import "UpdateChecker.h"
 #import "installer/modpack/ModrinthAPI.h"
 #import "installer/modpack/CurseForgeAPI.h"
 #import "ModVersion.h"
 #import "AI/AIViewController.h"
 #import "AI/AiSessionStore.h"
 #import "authenticator/BaseAuthenticator.h"
+
+/// 当前游戏目录下 .minecraft 的绝对路径（引擎通用：UI 包按「目录名」打开任意标准子目录）。
+static NSString *PLUIGameMinecraftPath(void) {
+    NSString *gameDir = getPrefObject(@"general.game_directory") ?: @"default";
+    return [NSString stringWithFormat:@"%s/instances/%@/.minecraft", getenv("POJAV_HOME"), gameDir];
+}
+
+/// 在系统文件 App 中打开目录（不存在则先创建）。通用能力，任何 UI 包可复用。
+static void PLUIOpenFolder(NSString *folder) {
+    if (folder.length == 0) return;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:folder]) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:folder
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    NSURL *url = [NSURL fileURLWithPath:folder];
+    if (@available(iOS 10.0, *)) {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    } else {
+        [[UIApplication sharedApplication] openURL:url];
+    }
+}
 
 @interface PLUIShellViewController () <UINavigationControllerDelegate, UIDocumentPickerDelegate, MultiplayerManagerDelegate>
 @property (nonatomic, strong) PLUILayoutEngine *engine;
@@ -50,6 +80,10 @@
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *modsCache;
 /// 光影包（Shaders）缓存：ShaderService 扫描结果的 Lua 可渲染结构；refresh 后派发 onShadersUpdated。
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *shadersCache;
+/// 资源包（ResourcePacks）缓存：ResourcePackService 扫描结果的 Lua 可渲染结构；refresh 后派发 onResourcePacksUpdated。
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *resourcePacksCache;
+/// 本地世界（Worlds）缓存：WorldService 扫描 saves/ 的结果；refresh 后派发 onWorldsUpdated。
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *worldsCache;
 /// 当前真实下载任务（下载页「开始下载」触发）；progress.fractionCompleted 由定时器播报到 Lua。
 @property (nonatomic, strong, nullable) MinecraftResourceDownloadTask *activeDownloadTask;
 @property (nonatomic, strong, nullable) NSTimer *downloadPublishTimer;
@@ -301,6 +335,22 @@
         }
         return @{ @"ok": @YES, @"items": items };
     }
+    if ([service isEqualToString:@"version"] && [method isEqualToString:@"select"]) {
+        // 切换当前游戏版本：args.id = 本地已安装版本 id。设为选中 profile、持久化并刷新状态，
+        // 使首页「启动游戏」与版本管理页选中态同步（引擎零页面特例）。
+        NSString *vid = args[@"id"];
+        if (![vid isKindOfClass:NSString.class] || vid.length == 0) return @{ @"ok": @NO };
+        BOOL exists = NO;
+        for (NSDictionary *v in self.localVersionList) {
+            if ([v[@"id"] isKindOfClass:NSString.class] && [v[@"id"] isEqualToString:vid]) { exists = YES; break; }
+        }
+        if (!exists) return @{ @"ok": @NO, @"error": @"version not found" };
+        PLProfiles.current.selectedProfileName = vid;
+        [PLProfiles.current save];
+        [self reloadVersionLists];
+        [self refreshStateAndNotifyReady];
+        return @{ @"ok": @YES, @"name": vid };
+    }
     if ([service isEqualToString:@"account"] && [method isEqualToString:@"current"]) {
         BaseAuthenticator *auth = BaseAuthenticator.current;
         NSString *name = auth.authData[@"username"];
@@ -345,6 +395,11 @@
         [self accountInfoChanged];
         NSString *name = auth.authData[@"username"] ?: @"";
         return @{ @"ok": @YES, @"name": name };
+    }
+    if ([service isEqualToString:@"account"] && [method isEqualToString:@"manage"]) {
+        // 打开原生账号管理（登录 / 新增 / 删除）：复用壳的原生回退页，Lua 只负责触发。
+        [self fallbackNativePage:@"accountManager"];
+        return @{ @"ok": @YES };
     }
     if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"list"]) {
         // 版本独立设置的读写读写：返回当前 profile 各字段真实值（未设置为默认）。
@@ -425,6 +480,20 @@
         } else {
             [[UIApplication sharedApplication] openURL:url];
         }
+        return @{ @"ok": @YES, @"path": folder };
+    }
+    if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"openFolder"]) {
+        // 通用：按标准目录名打开当前 .minecraft 下的任意子目录（白名单，任何 UI 包可调用）。
+        static NSSet<NSString *> *allowedDirs = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            allowedDirs = [NSSet setWithArray:@[@"mods", @"shaderpacks", @"resourcepacks", @"saves",
+                                               @"screenshots", @"config", @"schematics", @"logs", @"versions"]];
+        });
+        NSString *dirName = [args[@"name"] isKindOfClass:NSString.class] ? args[@"name"] : @"";
+        if (![allowedDirs containsObject:dirName]) return @{ @"ok": @NO, @"error": @"unsupported folder" };
+        NSString *folder = [PLUIGameMinecraftPath() stringByAppendingPathComponent:dirName];
+        PLUIOpenFolder(folder);
         return @{ @"ok": @YES, @"path": folder };
     }
     if ([service isEqualToString:@"versionSettings"] && [method isEqualToString:@"reset"]) {
@@ -597,6 +666,133 @@
             [self restartShadersScan];
             return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
         }
+    }
+    // ---- 资源包（ResourcePacks）服务：与 mods/shaders 同构（ResourcePackService 扫描 resourcepacks/）----
+    if ([service isEqualToString:@"resourcepacks"] && [method isEqualToString:@"list"]) {
+        if (self.resourcePacksCache.count == 0) [self restartResourcePacksScan];
+        return @{ @"ok": @YES, @"profile": PLProfiles.current.selectedProfileName ?: @"",
+                  @"items": self.resourcePacksCache ?: @[] };
+    }
+    if ([service isEqualToString:@"resourcepacks"] && [method isEqualToString:@"refresh"]) {
+        [self restartResourcePacksScan];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"resourcepacks"] && [method isEqualToString:@"toggle"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.resourcePacksCache && idx < self.resourcePacksCache.count) {
+            NSDictionary *item = self.resourcePacksCache[idx];
+            ResourcePackItem *rp = [ResourcePackItem new];
+            rp.fileName = item[@"fileName"];
+            rp.filePath = item[@"filePath"];
+            rp.disabled = [item[@"enabled"] boolValue] == NO;
+            NSError *err = nil;
+            BOOL ok = [[ResourcePackService sharedService] toggleEnableForResourcePack:rp error:&err];
+            [self restartResourcePacksScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"resourcepacks"] && [method isEqualToString:@"delete"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.resourcePacksCache && idx < self.resourcePacksCache.count) {
+            NSDictionary *item = self.resourcePacksCache[idx];
+            ResourcePackItem *rp = [ResourcePackItem new];
+            rp.fileName = item[@"fileName"];
+            rp.filePath = item[@"filePath"];
+            NSError *err = nil;
+            BOOL ok = [[ResourcePackService sharedService] deleteResourcePack:rp error:&err];
+            [self restartResourcePacksScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    // ---- 世界（Worlds）服务：WorldService 扫描 saves/（本地世界管理；在线世界入口在原生世界管理页）----
+    if ([service isEqualToString:@"worlds"] && [method isEqualToString:@"list"]) {
+        if (self.worldsCache.count == 0) [self restartWorldsScan];
+        return @{ @"ok": @YES, @"profile": PLProfiles.current.selectedProfileName ?: @"",
+                  @"items": self.worldsCache ?: @[] };
+    }
+    if ([service isEqualToString:@"worlds"] && [method isEqualToString:@"refresh"]) {
+        [self restartWorldsScan];
+        return @{ @"ok": @YES };
+    }
+    if ([service isEqualToString:@"worlds"] && [method isEqualToString:@"delete"]) {
+        NSUInteger idx = [args[@"index"] unsignedIntegerValue];
+        if (self.worldsCache && idx < self.worldsCache.count) {
+            NSDictionary *item = self.worldsCache[idx];
+            WorldItem *w = [WorldItem new];
+            w.worldName = item[@"folder"];
+            w.filePath = item[@"filePath"];
+            NSError *err = nil;
+            BOOL ok = [[WorldService sharedService] deleteWorld:w error:&err];
+            [self restartWorldsScan];
+            return ok ? @{ @"ok": @YES } : @{ @"ok": @NO, @"error": err.localizedDescription ?: @"" };
+        }
+    }
+    if ([service isEqualToString:@"worlds"] && [method isEqualToString:@"openFolder"]) {
+        NSString *folder = [PLUIGameMinecraftPath() stringByAppendingPathComponent:@"saves"];
+        PLUIOpenFolder(folder);
+        return @{ @"ok": @YES, @"path": folder };
+    }
+    // ---- 收藏（Favorites）服务：引擎级 JSON 收藏夹，任何 UI 包可读写（projectId 唯一）----
+    if ([service isEqualToString:@"favorites"] &&
+        ([method isEqualToString:@"list"] || [method isEqualToString:@"toggle"] || [method isEqualToString:@"remove"])) {
+        return [self handleFavoritesService:method args:args];
+    }
+    // ---- 加载器安装（Loader）：弹出引擎原生加载器安装选择页（通用服务，args.version = 目标游戏版本）----
+    if ([service isEqualToString:@"loader"] && [method isEqualToString:@"install"]) {
+        NSString *version = [args[@"version"] isKindOfClass:NSString.class] ? args[@"version"] : @"";
+        ModLoaderInstallViewController *vc = [[ModLoaderInstallViewController alloc] init];
+        vc.gameVersion = version;
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.prefersLargeTitles = NO;
+        [self setContentViewController:nav animated:YES];
+        return @{ @"ok": @YES };
+    }
+    // ---- 系统通用能力：打开外部链接（仅 http/https，任何 UI 包可调用）----
+    if ([service isEqualToString:@"system"] && [method isEqualToString:@"openURL"]) {
+        NSString *urlString = [args[@"url"] isKindOfClass:NSString.class] ? args[@"url"] : @"";
+        NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+        BOOL http = [url.scheme isEqualToString:@"http"] || [url.scheme isEqualToString:@"https"];
+        if (!url || !http) return @{ @"ok": @NO, @"error": @"unsupported url" };
+        if (@available(iOS 10.0, *)) {
+            [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+        } else {
+            [[UIApplication sharedApplication] openURL:url];
+        }
+        return @{ @"ok": @YES };
+    }
+    // ---- 日志（Logs）：读取游戏日志（优先）/启动器日志（回退）末尾片段，供 UI 包直接渲染 ----
+    if ([service isEqualToString:@"logs"] && [method isEqualToString:@"tail"]) {
+        NSInteger maxChars = 8000;
+        NSNumber *req = [args[@"maxChars"] isKindOfClass:NSNumber.class] ? args[@"maxChars"] : nil;
+        if (req.integerValue > 0 && req.integerValue <= 64000) maxChars = req.integerValue;
+        NSString *tail = [self latestLogTailWithLimit:maxChars];
+        return @{ @"ok": tail.length > 0, @"text": tail ?: @"", @"maxChars": @(maxChars) };
+    }
+    // ---- 更新（Update）：引擎自身版本检查（GitHub Releases 正式版）；异步结果经 onUpdateChecked 回推 ----
+    if ([service isEqualToString:@"update"] && [method isEqualToString:@"check"]) {
+        __weak typeof(self) weakSelf = self;
+        [UpdateChecker checkForUpdateWithCompletion:^(UpdateInfo *info, NSError *error) {
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.runtime) return;
+            NSMutableDictionary *payload = [NSMutableDictionary dictionary];
+            payload[@"ok"] = @(info != nil);
+            payload[@"current"] = info.currentVersion ?: [UpdateChecker currentVersion] ?: @"";
+            if (info) {
+                payload[@"latest"] = info.latestVersion ?: @"";
+                payload[@"hasUpdate"] = @(info.hasUpdate);
+                payload[@"name"] = info.releaseName ?: @"";
+                payload[@"notes"] = info.releaseNotes ?: @"";
+                payload[@"url"] = info.htmlURL ?: @"";
+            } else {
+                payload[@"error"] = error.localizedDescription ?: @"";
+            }
+            [strongSelf.runtime dispatchEvent:@"onUpdateChecked" arguments:@[payload]];
+        }];
+        return @{ @"ok": @YES, @"checking": @YES };
+    }
+    if ([service isEqualToString:@"update"] && [method isEqualToString:@"openPage"]) {
+        [UpdateChecker openReleasePage];
+        return @{ @"ok": @YES };
     }
     if ([service isEqualToString:@"system"] && [method isEqualToString:@"info"]) {
         // 仅描述结构：动态值由设备/运行时填充，不写死。
@@ -1252,6 +1448,8 @@
     else if ([token isEqualToString:@"mods"])           [self showModsManager];
     else if ([token isEqualToString:@"shaders"])        [self showShadersManager];
     else if ([token isEqualToString:@"modpackImport"])  [self showModpackImport];
+    else if ([token isEqualToString:@"modpackExport"])  [self showModpackExport];
+    else if ([token isEqualToString:@"worlds"])         [self showWorldsManager];
     else if ([token isEqualToString:@"gameDirectory"])  [self showGameDirectory];
     else if ([token isEqualToString:@"profileEditor"])  [self showProfileEditor:nil];
 }
@@ -1457,6 +1655,8 @@
         @"ModsManagerViewController": @"open:mods",
         @"ShadersManagerViewController": @"open:shaders",
         @"ModpackImportViewController": @"open:modpackImport",
+        @"ModpackExportViewController": @"open:modpackExport",
+        @"WorldsManagerViewController": @"open:worlds",
         @"LauncherPrefGameDirViewController": @"open:gameDirectory",
         @"AccountListViewController": @"open:accountManager",
         @"ProfileSettingsViewController": @"open:profileEditor",
@@ -1736,6 +1936,132 @@
     }];
 }
 
+// 资源包（ResourcePacks）异步扫描：ResourcePackService 扫描当前版本 resourcepacks/，结构化为缓存并推送 Lua。
+- (void)restartResourcePacksScan {
+    NSString *profile = PLProfiles.current.selectedProfileName;
+    __weak typeof(self) weakSelf = self;
+    [[ResourcePackService sharedService] scanResourcePacksForProfile:profile completion:^(NSArray<ResourcePackItem *> *packs) {
+        NSMutableArray *items = [NSMutableArray new];
+        [packs enumerateObjectsUsingBlock:^(ResourcePackItem *p, NSUInteger i, BOOL *stop) {
+            NSString *name = p.displayName.length > 0 ? p.displayName : p.fileName;
+            [items addObject:@{
+                @"name": name ?: @"",
+                @"fileName": p.fileName ?: @"",
+                @"filePath": p.filePath ?: @"",
+                @"enabled": @(!p.disabled),
+                @"author": p.author ?: @"",
+                @"gameVersion": p.gameVersion ?: @"",
+            }];
+        }];
+        // Lua 状态单线程访问：合并更新 + 事件必须回到主线程。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.resourcePacksCache = items;
+            if (strongSelf.runtime) {
+                [strongSelf.runtime dispatchEvent:@"onResourcePacksUpdated"
+                                        arguments:@[@{ @"ok": @YES, @"items": items }]];
+            }
+        });
+    }];
+}
+
+// 本地世界（Worlds）异步扫描：WorldService 扫描当前版本 saves/，结构化为缓存并推送 Lua。
+- (void)restartWorldsScan {
+    NSString *profile = PLProfiles.current.selectedProfileName;
+    __weak typeof(self) weakSelf = self;
+    [[WorldService sharedService] scanWorldsForProfile:profile completion:^(NSArray<WorldItem *> *worlds) {
+        NSMutableArray *items = [NSMutableArray new];
+        [worlds enumerateObjectsUsingBlock:^(WorldItem *w, NSUInteger i, BOOL *stop) {
+            NSString *name = w.displayName.length > 0 ? w.displayName : w.worldName;
+            [items addObject:@{
+                @"name": name ?: @"",
+                @"folder": w.worldName ?: @"",
+                @"filePath": w.filePath ?: @"",
+                @"lastPlayed": w.lastPlayed ?: @"",
+                @"size": w.worldSize ?: @0,
+            }];
+        }];
+        // Lua 状态单线程访问：合并更新 + 事件必须回到主线程。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.worldsCache = items;
+            if (strongSelf.runtime) {
+                [strongSelf.runtime dispatchEvent:@"onWorldsUpdated"
+                                        arguments:@[@{ @"ok": @YES, @"items": items }]];
+            }
+        });
+    }];
+}
+
+// 收藏（Favorites）通用服务：引擎级 JSON 收藏夹（POJAV_HOME/uipack/favorites.json），
+// 任何 UI 包按 projectId 读写；条目结构 { projectId, source, category, title, author }。
+- (NSDictionary *)handleFavoritesService:(NSString *)method args:(NSDictionary *)args {
+    const char *pojavHome = getenv("POJAV_HOME");
+    if (!pojavHome) return @{ @"ok": @NO, @"error": @"no storage path" };
+    NSString *path = [NSString stringWithFormat:@"%s/uipack/favorites.json", pojavHome];
+    NSMutableArray<NSDictionary *> *store = [NSMutableArray array];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data) {
+        id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if ([parsed isKindOfClass:NSArray.class]) store = [parsed mutableCopy];
+    }
+    if ([method isEqualToString:@"list"]) {
+        return @{ @"ok": @YES, @"items": store };
+    }
+    NSString *projectId = [args[@"projectId"] isKindOfClass:NSString.class] ? args[@"projectId"] : @"";
+    if (projectId.length == 0) return @{ @"ok": @NO, @"error": @"missing projectId" };
+    NSInteger existing = -1;
+    for (NSUInteger i = 0; i < store.count; i++) {
+        if ([store[i][@"projectId"] isEqualToString:projectId]) { existing = (NSInteger)i; break; }
+    }
+    if ([method isEqualToString:@"toggle"]) {
+        if (existing >= 0) {
+            [store removeObjectAtIndex:(NSUInteger)existing];
+        } else {
+            NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+            entry[@"projectId"] = projectId;
+            entry[@"source"] = [args[@"source"] isKindOfClass:NSString.class] ? args[@"source"] : @"";
+            entry[@"category"] = [args[@"category"] isKindOfClass:NSString.class] ? args[@"category"] : @"";
+            entry[@"title"] = [args[@"title"] isKindOfClass:NSString.class] ? args[@"title"] : @"";
+            entry[@"author"] = [args[@"author"] isKindOfClass:NSString.class] ? args[@"author"] : @"";
+            [store addObject:entry];
+        }
+    } else if ([method isEqualToString:@"remove"]) {
+        if (existing >= 0) [store removeObjectAtIndex:(NSUInteger)existing];
+    }
+    // 原子写入：先建目录，再序列化落盘。
+    [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    NSError *writeErr = nil;
+    NSData *out = [NSJSONSerialization dataWithJSONObject:store options:NSJSONWritingPrettyPrinted error:&writeErr];
+    if (!out || ![out writeToFile:path atomically:YES]) {
+        return @{ @"ok": @NO, @"error": writeErr.localizedDescription ?: @"write failed" };
+    }
+    return @{ @"ok": @YES, @"items": store };
+}
+
+// 日志末尾片段：优先游戏日志（POJAV_GAME_DIR/logs/latest.log），回退启动器日志（POJAV_HOME/latestlog.txt）。
+- (NSString *)latestLogTailWithLimit:(NSInteger)limit {
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    const char *gameDir = getenv("POJAV_GAME_DIR");
+    if (gameDir) [candidates addObject:[NSString stringWithFormat:@"%s/logs/latest.log", gameDir]];
+    const char *pojavHome = getenv("POJAV_HOME");
+    if (pojavHome) [candidates addObject:[NSString stringWithFormat:@"%s/latestlog.txt", pojavHome]];
+    for (NSString *path in candidates) {
+        NSString *content = [NSString stringWithContentsOfFile:path
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:nil];
+        if (content.length == 0) continue;
+        if (limit > 0 && content.length > (NSUInteger)limit) {
+            content = [@"…\n" stringByAppendingString:[content substringFromIndex:content.length - (NSUInteger)limit]];
+        }
+        return content;
+    }
+    return @"";
+}
+
 // 远程版本按 PCL 分类分组（正式版/快照/愚人节/远古 + 最新），供下载页版本列表渲染。
 // 远程条目来自 version_manifest_v2.json，字段 id/type/releaseTime。
 - (NSDictionary *)downloadVersionGroups {
@@ -1840,6 +2166,24 @@
     nav.navigationBar.prefersLargeTitles = NO;
     ModpackImportViewController *m = [[ModpackImportViewController alloc] init];
     [nav pushViewController:m animated:NO];
+    [self setContentViewController:nav animated:YES];
+}
+
+// 通用能力页：整合包导出（引擎原生界面，任何 UI 包按 token 进入）。
+- (void)showModpackExport {
+    ModpackExportViewController *e = [[ModpackExportViewController alloc] init];
+    e.preselectedProfileName = PLProfiles.current.selectedProfileName;
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:e];
+    nav.navigationBar.prefersLargeTitles = NO;
+    [self setContentViewController:nav animated:YES];
+}
+
+// 通用能力页：本地世界管理（引擎原生界面，任何 UI 包按 token 进入）。
+- (void)showWorldsManager {
+    WorldsManagerViewController *w = [[WorldsManagerViewController alloc] init];
+    w.profileName = PLProfiles.current.selectedProfileName;
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:w];
+    nav.navigationBar.prefersLargeTitles = NO;
     [self setContentViewController:nav animated:YES];
 }
 
@@ -1977,6 +2321,8 @@
         @"ModsManagerViewController": @"mods",
         @"ShadersManagerViewController": @"shaders",
         @"ModpackImportViewController": @"modpackImport",
+        @"ModpackExportViewController": @"modpackExport",
+        @"WorldsManagerViewController": @"worlds",
         @"LauncherPrefGameDirViewController": @"gameDirectory",
         @"AccountListViewController": @"accountManager",
         @"ProfileSettingsViewController": @"profileEditor",
