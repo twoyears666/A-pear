@@ -51,7 +51,73 @@ static UIImage *PLUIResolveImage(id spec) {
     if ([spec hasPrefix:@"$image:"]) {
         return [PLThemeManager.sharedManager imageForToken:[spec substringFromIndex:7]];
     }
+    if ([spec hasPrefix:@"file:"]) {
+        // 本地图片文件（任何 UI 包可用，例如配合 files.list / 引擎下载缓存）
+        return [UIImage imageWithContentsOfFile:[spec substringFromIndex:5]];
+    }
     return nil;
+}
+
+// ---- 远程图片（通用能力）----
+// UI 包可以把 http(s) URL 直接写成 icon / src，或运行时 setImage("https://...")，
+// 由引擎负责下载与内存+磁盘缓存，脚本层无需任何网络权限。
+static NSCache<NSString *, UIImage *> *PLUIImageMemCache(void) {
+    static NSCache *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 64;
+    });
+    return cache;
+}
+
+// 稳定缓存文件名：FNV-1a（同一 URL 跨启动得到同一文件，避免重复下载）
+static NSString *PLUIImageCachePath(NSString *urlString) {
+    const char *bytes = urlString.UTF8String ?: "";
+    uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char *p = (const unsigned char *)bytes; *p; p++) {
+        hash ^= (uint64_t)(*p);
+        hash *= 1099511628211ULL;
+    }
+    static NSString *dir = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+        dir = [caches stringByAppendingPathComponent:@"plui-images"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    });
+    return [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%016llx.img", hash]];
+}
+
+static UIImage *PLUILoadCachedRemoteImage(NSString *urlString) {
+    UIImage *mem = [PLUIImageMemCache() objectForKey:urlString];
+    if (mem) return mem;
+    NSString *path = PLUIImageCachePath(urlString);
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return nil;
+    UIImage *disk = [UIImage imageWithContentsOfFile:path];
+    if (disk) [PLUIImageMemCache() setObject:disk forKey:urlString];
+    return disk;
+}
+
+static BOOL PLUIIsRemoteImageSpec(NSString *spec) {
+    return [spec hasPrefix:@"http://"] || [spec hasPrefix:@"https://"];
+}
+
+static void PLUIFetchRemoteImage(NSString *urlString, void (^completion)(UIImage *)) {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url || !completion) return;
+    NSURLSessionDataTask *task = [NSURLSession.sharedSession
+        dataTaskWithURL:url
+      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        UIImage *image = (error == nil && data.length > 0) ? [UIImage imageWithData:data] : nil;
+        if (image) {
+            [[NSFileManager defaultManager] createFileAtPath:PLUIImageCachePath(urlString) contents:data attributes:nil];
+            [PLUIImageMemCache() setObject:image forKey:urlString];
+        }
+        if (!image) return;
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(image); });
+    }];
+    [task resume];
 }
 
 static NSString *PLUIResolveText(id spec) {
@@ -219,6 +285,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
 @property (nonatomic, strong) UILabel *textLabel;
     @property (nonatomic, strong) UIButton *button;
     @property (nonatomic, strong) UIImageView *contentImageView;
+    // 正在进行中的远程图片 URL：下载回来时若已切走/换图，丢弃该结果，避免串图。
+    @property (nonatomic, copy, nullable) NSString *pendingImageURL;
     // 文本输入框原语（input）：可编辑单行输入（PCL II 安装预览卡「版本名称」）。
     @property (nonatomic, strong, nullable) UITextField *textField;
 // 通用 hover：节点设置 hoverColor 后，按下/滑入呈浅蓝高亮，松手/滑出恢复原底色。
@@ -647,7 +715,8 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     _contentImageView = [UIImageView new];
     _contentImageView.translatesAutoresizingMaskIntoConstraints = YES;
     _contentImageView.contentMode = UIViewContentModeScaleAspectFit;
-    _contentImageView.image = PLUIResolveImage(node[@"icon"] ?: node[@"src"]);
+    _contentImageView.image = nil;
+    [self applyImageSpec:node[@"icon"] ?: node[@"src"]];
     NSDictionary *style = [node[@"style"] isKindOfClass:NSDictionary.class] ? node[@"style"] : @{};
     _contentImageView.tintColor = PLUIResolveColor(style[@"tint"], _contentImageView.tintColor);
     _contentImageView.backgroundColor = PLUIResolveColor(node[@"background"], _contentImageView.backgroundColor);
@@ -1028,10 +1097,33 @@ static NSDictionary *PLUIApplyContainerDefaults(NSString *kind, NSDictionary *no
     return nil;
 }
 
-- (void)updateImageSpec:(NSString *)imageSpec {
-    UIImage *image = PLUIResolveImage(imageSpec);
+- (void)setResolvedImage:(UIImage *)image {
     if (self.contentImageView) self.contentImageView.image = image;
     else if (self.button && image) [self.button setImage:image forState:UIControlStateNormal];
+}
+
+// 统一的图片落点：sf: / $image: / file: 同步解析；http(s) 走缓存或异步下载（保持占位图直到到达）。
+- (void)applyImageSpec:(id)spec {
+    if (![spec isKindOfClass:NSString.class]) return;
+    NSString *imageSpec = spec;
+    self.pendingImageURL = nil;
+    if (PLUIIsRemoteImageSpec(imageSpec)) {
+        UIImage *cached = PLUILoadCachedRemoteImage(imageSpec);
+        if (cached) { [self setResolvedImage:cached]; return; }
+        self.pendingImageURL = imageSpec;
+        __weak typeof(self) weakSelf = self;
+        PLUIFetchRemoteImage(imageSpec, ^(UIImage *image) {
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || ![strongSelf.pendingImageURL isEqualToString:imageSpec]) return;
+            [strongSelf setResolvedImage:image];
+        });
+        return;
+    }
+    [self setResolvedImage:PLUIResolveImage(imageSpec)];
+}
+
+- (void)updateImageSpec:(NSString *)imageSpec {
+    [self applyImageSpec:imageSpec];
 }
 
 - (void)updateTextColorSpec:(NSString *)colorSpec {
