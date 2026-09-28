@@ -766,7 +766,7 @@ static void PLUIOpenFolder(NSString *folder) {
         NSNumber *req = [args[@"maxChars"] isKindOfClass:NSNumber.class] ? args[@"maxChars"] : nil;
         if (req.integerValue > 0 && req.integerValue <= 64000) maxChars = req.integerValue;
         NSString *tail = [self latestLogTailWithLimit:maxChars];
-        return @{ @"ok": tail.length > 0, @"text": tail ?: @"", @"maxChars": @(maxChars) };
+        return @{ @"ok": @(tail.length > 0), @"text": tail ?: @"", @"maxChars": @(maxChars) };
     }
     // ---- 文件（Files）：只读列出当前 .minecraft 下白名单目录内的条目（任何 UI 包可调用，用于截图/投影等）----
     if ([service isEqualToString:@"files"] && [method isEqualToString:@"list"]) {
