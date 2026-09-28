@@ -768,6 +768,57 @@ static void PLUIOpenFolder(NSString *folder) {
         NSString *tail = [self latestLogTailWithLimit:maxChars];
         return @{ @"ok": tail.length > 0, @"text": tail ?: @"", @"maxChars": @(maxChars) };
     }
+    // ---- 文件（Files）：只读列出当前 .minecraft 下白名单目录内的条目（任何 UI 包可调用，用于截图/投影等）----
+    if ([service isEqualToString:@"files"] && [method isEqualToString:@"list"]) {
+        static NSSet<NSString *> *allowedDirs = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            allowedDirs = [NSSet setWithArray:@[@"screenshots", @"schematics", @"resourcepacks", @"shaderpacks",
+                                               @"mods", @"saves", @"logs", @"config", @"versions"]];
+        });
+        NSString *dirName = [args[@"dir"] isKindOfClass:NSString.class] ? args[@"dir"] : @"";
+        if (![allowedDirs containsObject:dirName]) return @{ @"ok": @NO, @"error": @"unsupported folder" };
+        NSArray<NSString *> *exts = nil;
+        if ([args[@"ext"] isKindOfClass:NSString.class] && [args[@"ext"] length] > 0) {
+            exts = [args[@"ext"] componentsSeparatedByString:@","];
+        }
+        NSInteger limit = 50;
+        NSNumber *reqLimit = [args[@"limit"] isKindOfClass:NSNumber.class] ? args[@"limit"] : nil;
+        if (reqLimit.integerValue > 0 && reqLimit.integerValue <= 200) limit = reqLimit.integerValue;
+        NSString *folder = [PLUIGameMinecraftPath() stringByAppendingPathComponent:dirName];
+        NSMutableArray *items = [NSMutableArray new];
+        NSArray *names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:folder error:nil];
+        for (NSString *name in names) {
+            if (name.length == 0 || [name hasPrefix:@"."]) continue;
+            NSString *full = [folder stringByAppendingPathComponent:name];
+            BOOL isDir = NO;
+            if (![[NSFileManager defaultManager] fileExistsAtPath:full isDirectory:&isDir]) continue;
+            if (exts && !isDir) {
+                NSString *ext = [name.pathExtension lowercaseString];
+                BOOL matched = NO;
+                for (NSString *e in exts) { if ([[e lowercaseString] isEqualToString:ext]) { matched = YES; break; } }
+                if (!matched) continue;
+            }
+            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:full error:nil];
+            NSDate *modified = attrs[NSFileModificationDate];
+            [items addObject:@{
+                @"name": name,
+                @"fileName": name,
+                @"filePath": full ?: @"",
+                @"isDir": @(isDir),
+                @"size": attrs ? @([attrs fileSize]) : @0,
+                @"modified": modified ? @([modified timeIntervalSince1970]) : @0,
+            }];
+        }
+        // 按修改时间倒序（最新在前），便于“截图”等场景直接展示最近产物。
+        [items sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [b[@"modified"] compare:a[@"modified"]];
+        }];
+        if ((NSInteger)items.count > limit) {
+            [items removeObjectsInRange:NSMakeRange((NSUInteger)limit, items.count - (NSUInteger)limit)];
+        }
+        return @{ @"ok": @YES, @"dir": dirName, @"path": folder ?: @"", @"items": items };
+    }
     // ---- 更新（Update）：引擎自身版本检查（GitHub Releases 正式版）；异步结果经 onUpdateChecked 回推 ----
     if ([service isEqualToString:@"update"] && [method isEqualToString:@"check"]) {
         __weak typeof(self) weakSelf = self;
