@@ -125,9 +125,12 @@ class ResourceContracts(unittest.TestCase):
             )
 
     def test_paths_use_the_shared_profile_resolver(self) -> None:
+        # 版本隔离后，mods 路径走 PLProfiles 的专用解析器；其余资源仍走游戏目录解析器。
         for service in self.SERVICES:
             text = source(f"Natives/{service}.m")
-            self.assertIn("resolvedGameDirectoryForProfileName", text)
+            self.assertRegex(
+                text, r"resolved(?:Game|Mods)DirectoryForProfileName"
+            )
 
         self.assertIn(
             "if (gameDir.length == 0) return nil",
@@ -147,19 +150,25 @@ class ResourceContracts(unittest.TestCase):
         self.assertIn("resolvedGameDirectoryForProfileName:(nullable NSString *)", profiles)
 
     def test_explicit_invalid_profile_never_falls_back_to_shared_game_dir(self) -> None:
-        for service_name, existing_method, ensure_method in (
-            ("ModService", "existingModsFolderForProfile", "ensureModsFolderForProfile"),
+        for service_name, existing_method, ensure_method, resolver_guard in (
+            (
+                "ModService",
+                "existingModsFolderForProfile",
+                "ensureModsFolderForProfile",
+                "resolvedModsDir.length == 0",
+            ),
             (
                 "ShaderService",
                 "existingShadersFolderForProfile",
                 "ensureShadersFolderForProfile",
+                "resolvedGameDir.length == 0",
             ),
         ):
             text = source(f"Natives/{service_name}.m")
             start = text.index(f"- (nullable NSString *){existing_method}")
             end = text.index("#pragma mark", start)
             folder_methods = text[start:end]
-            self.assertIn("resolvedGameDir.length == 0", folder_methods)
+            self.assertIn(resolver_guard, folder_methods)
             self.assertIn(ensure_method, folder_methods)
             self.assertNotIn('getenv("POJAV_GAME_DIR")', folder_methods)
 

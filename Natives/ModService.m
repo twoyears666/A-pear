@@ -199,24 +199,16 @@
     return data;
 }
 
-/// 解析 profile 的 gameDir 为绝对路径。
-/// profile gameDir 通常是相对路径（如 "./custom_gamedir/{name}"），需相对于 POJAV_GAME_DIR 解析。
-/// 之前直接使用相对路径会导致 mods 文件夹找不到（fileExistsAtPath 对相对路径基于 cwd 解析，
-/// 而 cwd 不一定是 POJAV_GAME_DIR）。
-- (nullable NSString *)resolveAbsoluteGameDirForProfile:(NSString *)profileName {
-    return [PLProfiles resolvedGameDirectoryForProfileName:profileName];
-}
-
+/// 查找指定 profile 已存在的 mods 目录（版本隔离感知：仅 Mod 隔离 → versions/<版本>/mods）
 - (nullable NSString *)existingModsFolderForProfile:(NSString *)profileName {
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    NSString *resolvedGameDir = [self resolveAbsoluteGameDirForProfile:profileName];
-    if (resolvedGameDir.length == 0) return nil;
+    NSString *resolvedModsDir = [PLProfiles resolvedModsDirectoryForProfileName:profileName];
+    if (resolvedModsDir.length == 0) return nil;
 
-    NSString *modsPath = [resolvedGameDir stringByAppendingPathComponent:@"mods"];
     BOOL isDir = NO;
-    if ([fm fileExistsAtPath:modsPath isDirectory:&isDir] && isDir) {
-        return modsPath;
+    if ([fm fileExistsAtPath:resolvedModsDir isDirectory:&isDir] && isDir) {
+        return resolvedModsDir;
     }
     return nil;
 }
@@ -224,12 +216,9 @@
 /// 获取当前 profile 的 mods 目录，不存在时自动创建
 - (nullable NSString *)ensureModsFolderForProfile:(NSString *)profileName error:(NSError **)error {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *resolvedGameDir = [self resolveAbsoluteGameDirForProfile:profileName];
-    NSString *modsPath = resolvedGameDir.length > 0
-        ? [resolvedGameDir stringByAppendingPathComponent:@"mods"]
-        : nil;
+    NSString *resolvedModsDir = [PLProfiles resolvedModsDirectoryForProfileName:profileName];
 
-    if (!modsPath) {
+    if (!resolvedModsDir) {
         if (error) {
             *error = [NSError errorWithDomain:@"ModService" code:1 userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_105", nil)}];
         }
@@ -237,22 +226,22 @@
     }
 
     BOOL isDir = NO;
-    if (![fm fileExistsAtPath:modsPath isDirectory:&isDir]) {
+    if (![fm fileExistsAtPath:resolvedModsDir isDirectory:&isDir]) {
         // 目录不存在，创建
         NSError *createError = nil;
-        [fm createDirectoryAtPath:modsPath withIntermediateDirectories:YES attributes:nil error:&createError];
+        [fm createDirectoryAtPath:resolvedModsDir withIntermediateDirectories:YES attributes:nil error:&createError];
         if (createError) {
             if (error) *error = createError;
             return nil;
         }
-        NSLog(@"[ModService] Created mods directory: %@", modsPath);
+        NSLog(@"[ModService] Created mods directory: %@", resolvedModsDir);
     } else if (!isDir) {
         if (error) {
-            *error = [NSError errorWithDomain:@"ModService" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:localize(@"i18n_str_451", nil), modsPath]}];
+            *error = [NSError errorWithDomain:@"ModService" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:localize(@"i18n_str_451", nil), resolvedModsDir]}];
         }
         return nil;
     }
-    return modsPath;
+    return resolvedModsDir;
 }
 
 // ---------- 缓存方法 ----------
