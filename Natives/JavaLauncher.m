@@ -523,6 +523,8 @@ int launchJVM(NSString *accountId, id launchTarget, int width, int height, int m
             [PLProfiles effectiveGameDirForProfile:isolationProfile]]
             .stringByStandardizingPath;
         // 按 PCL2 目录结构就绪隔离目录，并对齐"仅 Mod 隔离"的共享 mods 符号链接
+        // 每次启动都做一次幂等的老数据迁移，确保早于本功能开启的完全隔离也能把主目录数据搬进版本目录
+        [PLProfiles migrateLegacyDataForProfile:isolationProfile];
         [PLProfiles ensureIsolationDirectoriesForProfile:isolationProfile];
         [PLProfiles alignSharedModsDirectoryForProfile:isolationProfile];
     } else {
